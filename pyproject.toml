@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mpi"
+version = "2026.11.24-1"
+description = "Unified Android/iOS package performance inspector (live capture)"
+# Core engine is GPL-3.0 (see repo-root LICENSE). Declared here so the package
+# metadata matches the license file.
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+    "numpy>=1.26",
+    "openpyxl>=3.1",
+    "matplotlib>=3.5",
+    "Pillow>=9.0",
+    "pywin32>=300; sys_platform == 'win32'",
+]
+
+[project.scripts]
+mpi = "mpi.cli:cli"
+mpi-api = "mpi.api:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pip-licenses>=4.0"]
+ios-windows = ["pymobiledevice3>=9.13,<10"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mpi*"]
+
+[tool.setuptools.package-data]
+mpi = ["play-memory-rules.json"]

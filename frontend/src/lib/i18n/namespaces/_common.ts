@@ -1,0 +1,81 @@
+// Shared, generic UI terms reused across many components (buttons, statuses).
+// Each namespace module is standalone: `ko` is the source of truth, and `en`/`zh`
+// are typed to mirror it key-for-key. No `as const` — we want string types so the
+// translations can differ from the Korean literals.
+
+export const ko = {
+  close: '닫기',
+  cancel: '취소',
+  save: '저장',
+  retry: '다시 시도',
+  refresh: '새로고침',
+  loading: '불러오는 중…',
+  copy: '복사',
+  copied: '복사됨',
+  connect: '연결',
+  disconnect: '연결 해제',
+  connected: '연결됨',
+  start: '시작',
+  stop: '중지',
+  remove: '삭제',
+  add: '추가',
+  settings: '설정',
+  unlimited: '무제한',
+  none: '없음',
+  on: '켜짐',
+  off: '꺼짐',
+  yes: '예',
+  no: '아니오',
+}
+
+export type CommonMessages = typeof ko
+
+export const en: CommonMessages = {
+  close: 'Close',
+  cancel: 'Cancel',
+  save: 'Save',
+  retry: 'Retry',
+  refresh: 'Refresh',
+  loading: 'Loading…',
+  copy: 'Copy',
+  copied: 'Copied',
+  connect: 'Connect',
+  disconnect: 'Disconnect',
+  connected: 'Connected',
+  start: 'Start',
+  stop: 'Stop',
+  remove: 'Remove',
+  add: 'Add',
+  settings: 'Settings',
+  unlimited: 'Unlimited',
+  none: 'None',
+  on: 'On',
+  off: 'Off',
+  yes: 'Yes',
+  no: 'No',
+}
+
+export const zh: CommonMessages = {
+  close: '关闭',
+  cancel: '取消',
+  save: '保存',
+  retry: '重试',
+  refresh: '刷新',
+  loading: '加载中…',
+  copy: '复制',
+  copied: '已复制',
+  connect: '连接',
+  disconnect: '断开连接',
+  connected: '已连接',
+  start: '开始',
+  stop: '停止',
+  remove: '删除',
+  add: '添加',
+  settings: '设置',
+  unlimited: '无限制',
+  none: '无',
+  on: '开',
+  off: '关',
+  yes: '是',
+  no: '否',
+}

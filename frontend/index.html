@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/build-assets/icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MPI</title>
+    <script>
+      // Apply the persisted theme before first paint to avoid a flash.
+      (function () {
+        try {
+          var saved = localStorage.getItem('mpi.theme.v1')
+          var theme = saved === 'light' || saved === 'dark' ? saved : 'dark'
+          var el = document.documentElement
+          el.classList.remove('dark', 'light')
+          el.classList.add(theme)
+        } catch (e) {
+          /* private mode / no storage — keep the default dark class */
+        }
+        // Reflect the persisted UI language on <html lang> before paint (a11y /
+        // font selection). LocaleProvider keeps it in sync after mount.
+        try {
+          var lang = localStorage.getItem('mpi.locale.v1')
+          if (lang === 'ko' || lang === 'en' || lang === 'zh') {
+            document.documentElement.lang = lang
+          }
+        } catch (e) {
+          /* private mode / no storage — keep the default lang */
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,199 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+/*
+ * MPI theme.
+ * - Dark by default, with a manual Light toggle (class-based: html.dark / html.light).
+ * - Cool slate canvas with a teal accent; Space Grotesk for UI, JetBrains Mono for numbers.
+ *
+ * Theming model
+ * -------------
+ * Semantic tokens (--color-bg/surface/ink/accent/...) carry the wireframe palette
+ * and FLIP per theme: dark values live in @theme (the default), light values are
+ * overridden under `html.light`. New UI uses utilities like `bg-surface`,
+ * `text-ink`, `border-line`, `text-accent`.
+ *
+ * The legacy `neutral` ramp is remapped to a single cool-gray scale (light end =
+ * low numbers, dark end = high numbers) so existing `bg-white dark:bg-neutral-900`
+ * style components inherit the new look automatically. `clay` is remapped to teal
+ * and flips its 500 stop per theme so the brand accent tracks light/dark.
+ */
+
+/* Class-based dark variant (default Tailwind v4 is prefers-color-scheme). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-display:
+    "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Helvetica Neue", Arial, "Noto Sans KR", "Malgun Gothic", sans-serif;
+  --font-sans:
+    "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Helvetica Neue", Arial, "Noto Sans KR", "Malgun Gothic", sans-serif;
+  --font-mono:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+    Consolas, "Liberation Mono", monospace;
+
+  /* Semantic surface/ink tokens — DARK values (the default theme). */
+  --color-bg: #0c0e12;
+  --color-surface: #15181e;
+  --color-surface-hi: #1a1e26;
+  --color-ink: #e7eaf0;
+  --color-muted: #828b99;
+  --color-faint: #5a6371;
+  --color-line: #262c35;
+  --color-grid: #22272f;
+  --color-icon: #1e232b;
+  --color-hover: #232a35;
+
+  --color-accent: #34d3c0;
+  --color-accent-soft: rgba(52, 211, 192, 0.12);
+  --color-accent-line: rgba(52, 211, 192, 0.3);
+
+  --color-rec: #f04444;
+  --color-rec-soft: rgba(240, 68, 68, 0.12);
+  --color-danger: #f0584d;
+  --color-ok: #22b378;
+
+  --color-warn: #d99a1c;
+  --color-warn-soft: rgba(217, 154, 28, 0.1);
+  --color-warn-line: rgba(217, 154, 28, 0.32);
+
+  /* Cool-gray ramp shared by both themes (light end low, dark end high). */
+  --color-neutral-50: #f5f7f9;
+  --color-neutral-100: #eceff3;
+  --color-neutral-200: #e1e6ec;
+  --color-neutral-300: #c7cdd6;
+  --color-neutral-400: #98a0ac;
+  --color-neutral-500: #6c7480;
+  --color-neutral-600: #4d5562;
+  --color-neutral-700: #39414d;
+  --color-neutral-800: #272d36;
+  --color-neutral-900: #15181e;
+  --color-neutral-950: #0c0e12;
+
+  /* Clay → teal. 500 (brand accent) flips per theme below. */
+  --color-clay-50: #e6faf6;
+  --color-clay-100: #c7f2ea;
+  --color-clay-200: #98e7da;
+  --color-clay-300: #5fd9c6;
+  --color-clay-400: #34d3c0;
+  --color-clay-500: #34d3c0;
+  --color-clay-600: #14b8a6;
+  --color-clay-700: #0f8e82;
+  --color-clay-800: #0b6f66;
+  --color-clay-900: #0c2f2b;
+}
+
+/* Light theme overrides — only the tokens that differ from the dark default. */
+html.light {
+  --color-bg: #eef0f4;
+  --color-surface: #ffffff;
+  --color-surface-hi: #ffffff;
+  --color-ink: #1b2128;
+  --color-muted: #6b727d;
+  --color-faint: #9aa1ac;
+  --color-line: #e2e6eb;
+  --color-grid: #eef1f4;
+  --color-icon: #f3f5f8;
+  --color-hover: #eef1f5;
+
+  --color-accent: #0d9488;
+  --color-accent-soft: rgba(13, 148, 136, 0.1);
+  --color-accent-line: rgba(13, 148, 136, 0.25);
+
+  --color-rec-soft: rgba(240, 68, 68, 0.08);
+  --color-warn: #a16207;
+  --color-warn-soft: rgba(161, 98, 7, 0.08);
+  --color-warn-line: rgba(161, 98, 7, 0.28);
+
+  /* Brand accent (legacy clay-500 utilities) tracks the light accent. */
+  --color-clay-500: #0d9488;
+  --color-clay-400: #0d9488;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+html.light {
+  color-scheme: light;
+}
+
+html {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background-color: var(--color-bg);
+  color: var(--color-ink);
+}
+
+html.dark body {
+  background-image: radial-gradient(
+    900px 500px at 78% -8%,
+    rgba(52, 211, 192, 0.07),
+    transparent 70%
+  );
+}
+html.light body {
+  background-image: radial-gradient(
+    900px 500px at 80% -10%,
+    rgba(13, 148, 136, 0.08),
+    transparent 70%
+  );
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Thin themed scrollbars (matches the wireframe). */
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes recpulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.3;
+    transform: scale(0.82);
+  }
+}
+
+@keyframes riseIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Recharts: clicking the chart focuses the SVG surface, which draws a stray
+ * white/light focus box over the plot. Suppress the focus outline on the chart
+ * wrapper and its SVG so selecting/clicking a chart never shows that box. */
+.recharts-wrapper,
+.recharts-wrapper:focus,
+.recharts-wrapper:focus-visible,
+.recharts-surface,
+.recharts-surface:focus,
+.recharts-surface:focus-visible,
+.recharts-responsive-container :focus,
+.recharts-responsive-container :focus-visible {
+  outline: none;
+}

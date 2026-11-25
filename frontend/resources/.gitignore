@@ -1,0 +1,2 @@
+# Built APK is a large binary artifact — staged here for packaging, not tracked.
+*.apk

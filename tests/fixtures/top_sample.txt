@@ -1,0 +1,7 @@
+Tasks: 1 total,   0 running,   1 sleeping,   0 stopped,   0 zombie
+  Mem:    3945264K total,  3400000K used,   545264K free,     1200K buffers
+ Swap:    1024000K total,        0K used,  1024000K free,  1050000K cached
+800%cpu  45%user   5%nice  20%sys 730%idle   0%iow   0%irq   0%sirq   0%host
+
+  PID USER         PR  NI VIRT  RES  SHR S[%CPU] %MEM     TIME+ ARGS
+ 2094 u0_a123      20   0 5.2G 450M 200M S  45.6 15.2   0:12.34 com.example.app

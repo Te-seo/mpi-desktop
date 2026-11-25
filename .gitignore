@@ -1,0 +1,92 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.pytest_cache/
+.pytest-tmp*/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Claude Code local session state
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local output
+.qa/
+*.json.out
+.wrangler/
+
+# PyInstaller portable build
+dist-portable/
+
+# Live device verification artifacts
+test_report_*.csv
+
+# Node / Electron
+node_modules/
+frontend/dist/
+frontend/dist-electron/
+frontend/build_output/
+frontend/build_output_*/
+frontend/.release-staging/
+release/
+# Generated at desktop build time (frontend prebuild → gen-notices.mjs); bundled
+# into the installer via extraResources, so never committed.
+frontend/THIRD-PARTY-NOTICES.txt
+
+# Bundled artifacts
+*.exe
+*.zip
+*.asar
+*.pptx
+# Code-signing private keys — NEVER commit (the public .cer is fine to keep)
+*.pfx
+dist-python/
+dist-release-*/
+build-release-*/
+
+# Large fixtures (do NOT commit) — private device captures, demo inputs
+samples/
+*.perfetto-trace
+
+# Capture files dropped at repo root
+mpi_*.csv
+# Legacy capture filenames may still exist locally during the one-time session
+# migration; keep them out of source control.
+perfinspect_*.csv
+
+# Excel lock files left behind while a saved report is open
+~$*.xlsx
+
+# Local task scratch files
+.tmp/
+
+# Independent source-only repository: local credentials and market artifacts
+.env
+.env.*
+*.pem
+*.key
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.aab
+*.apk
+certs/

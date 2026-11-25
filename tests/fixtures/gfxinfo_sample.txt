@@ -1,0 +1,37 @@
+Graphics info for pid 2094 [com.example.app]
+
+Stats since: 12345678901234ns
+Total frames rendered: 35466
+Janky frames: 1167 (3.29%)
+50th percentile: 5ms
+90th percentile: 7ms
+95th percentile: 11ms
+99th percentile: 25ms
+Number Missed Vsync: 141
+Number High input latency: 0
+Number Slow UI thread: 314
+Number Slow bitmap uploads: 0
+Number Slow issue draw commands: 0
+Number Frame deadline missed: 470
+HISTOGRAM: 5ms=1000 6ms=2000 7ms=3000 8ms=1500
+
+Caches:
+Current memory usage / total memory usage (bytes):
+  TextureCache        1048576 / 33554432
+
+Pipeline=FrameBuilder
+Profile data in ms:
+
+com.example.app/com.example.app.MainActivity/android.view.ViewRootImpl@deadbeef (visibility=0)
+Stats since: 12345678901234ns
+
+---PROFILEDATA---
+Flags,IntendedVsync,Vsync,OldestInputEvent,NewestInputEvent,HandleInputStart,AnimationStart,PerformTraversalsStart,DrawStart,SyncQueued,SyncStart,IssueDrawCommandsStart,SwapBuffers,FrameCompleted
+0,100000000,100000000,0,0,101000000,102000000,103000000,104000000,105000000,106000000,107000000,108000000,116666666
+0,116666666,116666666,0,0,117000000,118000000,119000000,120000000,121000000,122000000,123000000,124000000,133333333
+0,133333333,133333333,0,0,134000000,135000000,136000000,137000000,138000000,139000000,140000000,141000000,150000000
+0,150000000,150000000,0,0,151000000,152000000,153000000,154000000,155000000,156000000,157000000,158000000,166666666
+0,166666666,166666666,0,0,167000000,168000000,169000000,170000000,171000000,172000000,173000000,174000000,183333333
+---PROFILEDATA---
+
+View hierarchy:

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "android_min_sdk": 33,
+  "policy_start": "2027-02",
+  "official_play_source": "https://support.google.com/googleplay/android-developer/answer/17492799",
+  "android_collection_source": "https://developer.android.com/games/optimize/memory-monitoring",
+  "scope": "mobile and tablet; Play evaluates opted-in field samples over the last 28 days",
+  "local_unit_convention": "Google help presents nominal MB/GB. Local QA uses MiB (1 MiB=1024 KiB) for MB values and GiB for GB values; not a claim about backend unit conversion.",
+  "tier_lower_inclusive_mib": [0, 3200, 4800, 6800, 9216, 14336],
+  "max_mem_total_inclusive_mib": 18432,
+  "tier_labels": ["below_3200_mib", "4_gb", "6_gb", "8_gb", "12_gb", "16_gb"],
+  "state_order": ["foreground", "user_perceived_services", "background", "cached"],
+  "anonymous_rss_plus_swap_limits_mib": {
+    "app": [[null,null,null,null],[2048,1024,1024,null],[2304,1280,1280,null],[2304,1536,1536,null],[3328,1792,1792,null],[4352,2048,2048,null]],
+    "game": [[null,null,null,null],[2304,2048,2048,null],[2816,2560,2560,null],[3584,2816,2816,null],[4096,3276.8,3276.8,null],[5120,3584,3584,null]]
+  },
+  "bitmap_limits_mib": [null, 200, 200, 400]
+}

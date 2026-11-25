@@ -288,6 +288,63 @@ describe('LiveTracing on-device overlay card', () => {
     )
   })
 
+  it('refreshes a newly started capture until desktop login is ready and ignores the old selection probe', async () => {
+    let releaseSelection!: (status: object) => void
+    const selection = new Promise<object>((resolve) => { releaseSelection = resolve })
+    const status = vi.fn()
+      .mockReturnValueOnce(selection)
+      .mockResolvedValueOnce({ installed: true, reason: 'companion_sign_in_required' })
+      .mockResolvedValue({ installed: true, supported: true, can_draw_overlays: true })
+    const original = ipc.call.getMockImplementation()!
+    ipc.call.mockImplementation((command, ...args) =>
+      command === 'companion_overlay_status' ? status(...args) : original(command, ...args))
+    enableOverlayInStorage()
+    renderLive()
+    await selectTarget()
+    vi.useFakeTimers()
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Start measurement' }))
+      await settlePromises()
+      expect(screen.getByRole('status')).toHaveTextContent(/Sign in/i)
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+      expect(screen.getByRole('status')).toHaveTextContent(/overlay is available/i)
+      releaseSelection({ installed: false, reason: 'companion_not_installed' })
+      await settlePromises()
+      expect(screen.getByRole('status')).toHaveTextContent(/overlay is available/i)
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+      expect(status.mock.calls).toEqual(Array(3).fill([{ serial: 'android-1' }, 30_000]))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('starts the helper only on explicit Connect and ends warm login checks on permission denial', async () => {
+    const status = vi.fn()
+      .mockResolvedValueOnce({ installed: true, reason: 'companion_unreachable' })
+      .mockResolvedValueOnce({ installed: true, reason: 'companion_sign_in_required' })
+      .mockResolvedValue({ installed: true, supported: true, reason: 'overlay_permission_denied' })
+    ipc.call.mockImplementation((command, ...args) =>
+      command === 'companion_overlay_status' ? status(...args) : Promise.resolve({}))
+    enableOverlayInStorage()
+    renderLive()
+    await selectTarget()
+    const connect = await screen.findByRole('button', { name: 'Connect MPI' })
+    vi.useFakeTimers()
+    try {
+      fireEvent.click(connect)
+      await settlePromises()
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+      expect(screen.getByRole('status')).toHaveTextContent(/Display over other apps/)
+      expect(status.mock.calls).toEqual([
+        [{ serial: 'android-1' }, 30_000],
+        [{ serial: 'android-1', connect: true }, 30_000],
+        [{ serial: 'android-1' }, 30_000],
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('sends the selection with start_capture and live-updates a running capture', async () => {
     localStorage.setItem(
       DEVICE_OVERLAY_STORAGE_KEY,
@@ -454,7 +511,12 @@ describe('LiveTracing on-device overlay card', () => {
       TEMPERATURE_GUARD_STORAGE_KEY,
       JSON.stringify({ enabled: true, thresholdC: 25 })
     )
+    let bridgeReady = false
     ipc.call.mockImplementation(async (command: string, payload?: { preview_id?: string }) => {
+      if (command === 'companion_overlay_status') {
+        return bridgeReady ? { installed: true, supported: true, can_draw_overlays: true }
+          : { installed: true, reason: 'companion_unreachable' }
+      }
       if (command === 'create_temperature_preview') {
         return {
           preview_id: 'preview-1',
@@ -507,6 +569,7 @@ describe('LiveTracing on-device overlay card', () => {
     fireEvent.click(screen.getByRole('switch', { name: 'Use the on-device metrics overlay' }))
     expect(ipc.call).not.toHaveBeenCalledWith('set_capture_overlay', expect.anything())
 
+    bridgeReady = true
     emit({
       id: null,
       ok: true,
@@ -524,5 +587,6 @@ describe('LiveTracing on-device overlay card', () => {
         metrics: ALL_OVERLAY_METRICS,
       })
     )
+    expect(screen.getByRole('status')).toHaveTextContent(/overlay is available/i)
   })
 })

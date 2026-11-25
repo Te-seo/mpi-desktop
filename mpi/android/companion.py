@@ -33,7 +33,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
 from . import adb
 
@@ -41,11 +41,16 @@ logger = logging.getLogger(__name__)
 PACKAGE = "com.mpi.companion"
 SOCKET_NAME = "mpi_companion"
 MAIN_ACTIVITY = f"{PACKAGE}/.MainActivity"
+CAPTURE_ACTIVITY = f"{PACKAGE}/.CaptureBootstrapActivity"
 MIN_PROTOCOL_VERSION = 4
 
 
 class CompanionError(RuntimeError):
     pass
+
+
+class _DesktopLoginRequired(CompanionError):
+    """The companion is reachable but its desktop lease is unavailable."""
 
 
 def status(serial: str) -> Dict[str, Any]:
@@ -91,24 +96,56 @@ class _Rpc:
         except json.JSONDecodeError as exc:
             raise CompanionError(f"invalid response to '{cmd}': {line!r}") from exc
         if not response.get("ok"):
+            if response.get("error") == "desktop-login-required":
+                raise _DesktopLoginRequired(f"companion error on '{cmd}': desktop-login-required")
             raise CompanionError(f"companion error on '{cmd}': {response.get('error')}")
         return response.get("data")
 
 
+def _start_activity(serial: str, component: str) -> bool:
+    # am start reports an absent component on stdout or as an adb error,
+    # depending on the Android version.
+    missing = r"Error\s+type\s+3|Activity\s+class\s+.*does\s+not\s+exist|unable\s+to\s+resolve"
+    try:
+        output = adb.shell(
+            f"am start --activity-no-animation -n {component}", serial=serial, timeout=20.0
+        )
+    except adb.AdbError as exc:
+        if re.search(missing, str(exc), re.IGNORECASE):
+            return False
+        raise
+    return not re.search(missing, output, re.IGNORECASE)
+
+
 def ensure_running(serial: str) -> None:
-    """Start the launcher activity, which (re)starts the foreground service that
-    binds the socket. Safe to call repeatedly."""
-    output = adb.shell(f"am start -n {MAIN_ACTIVITY}", serial=serial, timeout=20.0)
-    # Android's `am start` commonly exits 0 even when the target package/activity
-    # is absent, reporting the failure only in stdout. Treat that as definitive
-    # so PackageSelector can fall back to the one-command adb inventory instead
-    # of polling a socket that cannot appear for the full six seconds.
-    if re.search(
-        r"(?:Error\s+type\s+3|Activity\s+class\s+.*does\s+not\s+exist|unable\s+to\s+resolve)",
-        output,
-        re.IGNORECASE,
-    ):
-        raise CompanionError(f"companion app is not installed on {serial}: {output.strip()}")
+    """Explicit Connect may show Android's missing-permission screens."""
+    if not _start_activity(serial, MAIN_ACTIVITY):
+        raise CompanionError(f"companion app is not installed on {serial}")
+
+
+def _start_capture_bridge(serial: str) -> None:
+    """Start the service before sampling, returning focus to the measured app."""
+    if _start_activity(serial, CAPTURE_ACTIVITY):
+        return
+
+    # Older Play builds only have the interactive bootstrap. It is safe here
+    # when all grants it could prompt for are already in place for this user.
+    overlay = adb.shell(
+        f"cmd appops get --user current {PACKAGE} SYSTEM_ALERT_WINDOW", serial=serial, timeout=5.0
+    )
+    if not re.search(r"\bSYSTEM_ALERT_WINDOW:\s*allow\b", overlay):
+        raise CompanionError("use Connect to prepare the installed companion")
+    sdk = adb.shell("getprop ro.build.version.sdk", serial=serial, timeout=5.0).strip()
+    if not sdk.isdecimal():
+        raise CompanionError("could not determine Android version")
+    if int(sdk) >= 33:
+        notification = adb.shell(
+            f"dumpsys package check-permission android.permission.POST_NOTIFICATIONS {PACKAGE} $(am get-current-user)",
+            serial=serial, timeout=5.0,
+        )
+        if notification.strip() != "0":
+            raise CompanionError("use Connect to prepare the installed companion")
+    ensure_running(serial)
 
 
 def _remove_socket_forward(serial: str) -> None:
@@ -152,7 +189,7 @@ def _try_connect(port: int, timeout: float) -> Optional[socket.socket]:
 
 
 def _open_forwarded_socket(
-    serial: str, connect_timeout: float, allow_cold_start: bool
+    serial: str, connect_timeout: float, start_if_cold: Optional[Callable[[str], None]]
 ) -> tuple:
     """Create the ``adb forward`` rule and return ``(socket, forward_rule)``.
 
@@ -162,7 +199,7 @@ def _open_forwarded_socket(
     foreground on the device. Only a cold connect pokes the activity and retries
     while the socket binds.
 
-    With ``allow_cold_start=False`` a warm connect is the only option: callers
+    With no startup callback a warm connect is the only option: callers
     running against a live capture cannot afford ``am start``, which foregrounds
     the companion and makes the measured app look backgrounded.
 
@@ -182,14 +219,14 @@ def _open_forwarded_socket(
         # Fast path: the service may already be running from a previous call.
         sock = _try_connect(port, timeout=1.5)
         if sock is None:
-            if not allow_cold_start:
+            if start_if_cold is None:
                 raise CompanionError(
                     f"companion bridge is not listening on {serial} and a cold "
                     "start is not allowed here"
                 )
             # Cold: bring the activity up (it starts the FGS that binds the
             # socket), then retry while it initializes.
-            ensure_running(serial)
+            start_if_cold(serial)
             deadline = time.monotonic() + connect_timeout
             while sock is None and time.monotonic() < deadline:
                 sock = _try_connect(port, timeout=4.0)
@@ -213,7 +250,9 @@ def connect(
     """``adb forward`` to the bridge and yield an RPC client, tearing down the
     forward rule on exit. One-shot: use :class:`OverlaySession` for anything that
     talks to the device repeatedly."""
-    sock, forward_rule = _open_forwarded_socket(serial, connect_timeout, allow_cold_start)
+    sock, forward_rule = _open_forwarded_socket(
+        serial, connect_timeout, ensure_running if allow_cold_start else None
+    )
     try:
         yield _Rpc(sock)
     finally:
@@ -225,6 +264,15 @@ def connect(
 
 
 # --- high-level convenience -----------------------------------------------
+
+
+def prepare_capture_bridge(serial: str) -> None:
+    """Warm the service before a temperature guard launches the target app."""
+    sock, rule = _open_forwarded_socket(serial, 6.0, _start_capture_bridge)
+    try:
+        sock.close()
+    finally:
+        adb.forward_remove(rule, serial=serial)
 
 
 def ping(serial: str) -> Dict[str, Any]:
@@ -267,6 +315,7 @@ OVERLAY_SOCKET_TIMEOUT_SEC = 5.0
 # unplugged mid-capture must not make every remaining sample pay a socket
 # timeout, and recovering would need the ``am start`` we are forbidden to run.
 _OVERLAY_PUSH_FAILURE_LIMIT = 3
+_OVERLAY_LOGIN_RETRY_SEC = 2.0
 
 
 def _normalize_overlay_metrics(metrics: Optional[Sequence[str]]) -> List[str]:
@@ -318,6 +367,7 @@ class OverlaySession:
         self._close_lock = threading.Lock()
         self._mailbox: Optional[Dict[str, Any]] = None
         self._cond = threading.Condition()
+        self._config_retry_at: Optional[float] = None
         try:
             sock.settimeout(OVERLAY_SOCKET_TIMEOUT_SEC)
         except OSError:
@@ -346,6 +396,10 @@ class OverlaySession:
         """Whether the companion reported the HUD as actually showing. False when
         the overlay permission is missing even though we asked for it."""
         return self._hud_enabled
+
+    @property
+    def login_pending(self) -> bool:
+        return self._config_retry_at is not None and self.alive
 
     @property
     def alive(self) -> bool:
@@ -378,7 +432,20 @@ class OverlaySession:
                 self._metrics = _normalize_overlay_metrics(metrics)
             if enabled is not None:
                 self._enabled = bool(enabled)
-            data = self._rpc.call("overlay_config", self._config_args())
+            if self._config_retry_at is None:
+                try:
+                    return self._send_config()
+                except _DesktopLoginRequired:
+                    self._defer_config()
+            return {
+                "enabled": False,
+                "requested": self._enabled,
+                "metrics": list(self._metrics),
+                "reason": "companion_sign_in_required",
+            }
+
+    def _send_config(self) -> Dict[str, Any]:
+        data = self._rpc.call("overlay_config", self._config_args())
         if isinstance(data, dict):
             self._hud_enabled = bool(data.get("enabled"))
             return data
@@ -451,6 +518,9 @@ class OverlaySession:
             self._enabled = False
             self._recording = False
             self._hud_enabled = False
+            with self._cond:
+                self._config_retry_at = None
+                self._mailbox = None
             # makefile() retains a socket reference. Shutdown first to unblock
             # a wedged RPC and let Android observe the disconnect immediately.
             try:
@@ -478,27 +548,62 @@ class OverlaySession:
             args["label"] = self._label
         return args
 
-    def _push_loop(self) -> None:
-        while True:
-            with self._cond:
-                while self._mailbox is None and not self._closed:
-                    self._cond.wait()
-                # Closing stops producers but drains the latest unsent sample
-                # before the terminal config. No capture sample waits on I/O.
-                if self._closed and self._mailbox is None:
-                    return
-                values = self._mailbox
-                self._mailbox = None
+    def _defer_config(self, values: Optional[Dict[str, Any]] = None) -> None:
+        # Keep this command socket: Android pins it to the first verified lease.
+        # Reopening could let a capture move to another account after a sign-out.
+        self._hud_enabled = False
+        with self._cond:
+            self._config_retry_at = time.monotonic() + _OVERLAY_LOGIN_RETRY_SEC
+            if self._mailbox is None:
+                self._mailbox = values
+            self._cond.notify()
+
+    def _wait_for_push(self) -> bool:
+        with self._cond:
+            while True:
+                if self._config_retry_at is None:
+                    # Closing drains the newest authorized sample before stop.
+                    if self._mailbox is not None:
+                        return True
+                    delay = None
+                else:
+                    delay = self._config_retry_at - time.monotonic()
+                    if delay <= 0:
+                        return not self._closed
+                if self._closed:
+                    return False
+                self._cond.wait(delay)
+
+    def _push_once(self) -> None:
+        with self._rpc_lock:
+            if not self._recording:
+                return
+            values = None
             try:
-                with self._rpc_lock:
-                    # A bounded close can win the wire after its join timeout.
-                    # Never send a delayed sample behind the terminal config.
-                    if not self._recording:
+                if self._config_retry_at is not None:
+                    if self._closed or self._config_retry_at > time.monotonic():
                         return
+                    self._send_config()
+                    with self._cond:
+                        self._config_retry_at = None
+                with self._cond:
+                    values, self._mailbox = self._mailbox, None
+                if values is not None:
                     self._rpc.call(
                         "overlay_update",
                         {"session_id": self._session_id, "values": values},
                     )
+            except _DesktopLoginRequired:
+                self._defer_config(values)
+            except (CompanionError, OSError):
+                if self._config_retry_at is not None:
+                    self._defer_config()
+                raise
+
+    def _push_loop(self) -> None:
+        while self._wait_for_push():
+            try:
+                self._push_once()
             except (CompanionError, OSError):
                 self._failures += 1
                 if self._failures >= _OVERLAY_PUSH_FAILURE_LIMIT:
@@ -529,7 +634,9 @@ def open_overlay_session(
     app, which the Android backend reads as the target being backgrounded and
     ends the measurement. Raises :class:`CompanionError` / ``AdbError`` — callers
     treat the HUD as optional and swallow both."""
-    sock, forward_rule = _open_forwarded_socket(serial, connect_timeout, allow_cold_start)
+    sock, forward_rule = _open_forwarded_socket(
+        serial, connect_timeout, _start_capture_bridge if allow_cold_start else None
+    )
     try:
         sock.settimeout(OVERLAY_SOCKET_TIMEOUT_SEC)
         identity = _Rpc(sock).call("ping")

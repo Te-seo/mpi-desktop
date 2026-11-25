@@ -202,7 +202,39 @@ def test_missing_companion_activity_fails_without_socket_retry(monkeypatch):
     assert removed == [("tcp:41234", "S1")]
 
 
-# --- install flow ---------------------------------------------------------
+@pytest.mark.parametrize("sdk,overlay,notification,can_start", [
+    (32, "allow", "-1", True),
+    (36, "allow", "0", True),
+    (36, "allow", "-1", False),
+    (36, "deny", "0", False),
+])
+def test_legacy_capture_bootstrap_requires_grants(monkeypatch, sdk, overlay, notification, can_start):
+    launched = []
+
+    def shell(command, serial, timeout):
+        if command.startswith("am start "):
+            component = command.split()[-1]
+            launched.append(component)
+            if component == companion.CAPTURE_ACTIVITY:
+                raise adb.AdbError("Error type 3: Activity class does not exist")
+            return "Starting"
+        if command.startswith("cmd appops get "):
+            return f"SYSTEM_ALERT_WINDOW: {overlay}"
+        if command == "getprop ro.build.version.sdk":
+            return str(sdk)
+        assert command.startswith("dumpsys package check-permission android.permission.POST_NOTIFICATIONS")
+        return notification
+
+    monkeypatch.setattr(adb, "shell", shell)
+    if can_start:
+        companion._start_capture_bridge("S1")
+    else:
+        with pytest.raises(companion.CompanionError, match="use Connect"):
+            companion._start_capture_bridge("S1")
+    assert launched == [companion.CAPTURE_ACTIVITY] + ([companion.MAIN_ACTIVITY] if can_start else [])
+
+
+# --- capture HUD ----------------------------------------------------------
 
 
 def _overlay_session(monkeypatch, removed=None):
@@ -266,6 +298,106 @@ def test_overlay_update_is_non_blocking_and_swallows_transport_errors(monkeypatc
     finally:
         session.close()
         server_side.close()
+
+
+@pytest.mark.parametrize("lose_login_during_capture", [False, True])
+def test_overlay_waits_for_desktop_login_on_its_original_socket(monkeypatch, lose_login_during_capture):
+    client, server = socket.socketpair()
+    authorized = threading.Event()
+    if lose_login_during_capture:
+        authorized.set()
+    denied = threading.Event()
+    retried = threading.Event()
+    updated = threading.Event()
+    calls = []
+    opens = []
+    removed = []
+
+    def open_socket(serial, timeout, start_if_cold):
+        opens.append((serial, start_if_cold))
+        return client, "tcp:41234"
+
+    def serve():
+        with server, server.makefile("r", encoding="utf-8") as reader:
+            for line in reader:
+                request = json.loads(line)
+                cmd, args = request["cmd"], request["args"]
+                accepted = authorized.is_set() or cmd == "ping" or args.get("recording") is False
+                calls.append((cmd, args, accepted, time.monotonic()))
+                if accepted:
+                    data = {"app": "mpi-companion", "protocol": 5} if cmd == "ping" else {"enabled": args.get("enabled")}
+                    reply = {"ok": True, "data": data}
+                    if cmd == "overlay_update":
+                        updated.set()
+                else:
+                    reply = {"ok": False, "error": "desktop-login-required"}
+                    denied.set()
+                    if sum(not allowed for _, _, allowed, _ in calls) >= 4:
+                        retried.set()
+                server.sendall((json.dumps(reply) + "\n").encode())
+
+    monkeypatch.setattr(companion, "_open_forwarded_socket", open_socket)
+    monkeypatch.setattr(companion, "_OVERLAY_LOGIN_RETRY_SEC", 0.03)
+    monkeypatch.setattr(adb, "forward_remove", lambda local, serial=None: removed.append(local))
+    worker = threading.Thread(target=serve, daemon=True)
+    worker.start()
+    session = companion.open_overlay_session("S1", enabled=True, allow_cold_start=False, session_id="capture-id")
+    try:
+        if lose_login_during_capture:
+            assert session.hud_enabled
+            authorized.clear()
+            session.update({"elapsed": 1.0})
+        assert denied.wait(2)
+        assert retried.wait(2)
+        assert session.alive and session.login_pending and not session.hud_enabled
+        assert session.configure(enabled=False, metrics=["cpu"])["reason"] == "companion_sign_in_required"
+        session.configure(enabled=True, metrics=["fps"])
+        for elapsed in range(2, 15):
+            session.update({"elapsed": elapsed})
+        authorized.set()
+        assert updated.wait(2)
+        assert session.hud_enabled and not session.login_pending
+    finally:
+        session.close()
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert opens == [("S1", None)] and removed == ["tcp:41234"]
+    assert all(args["session_id"] == "capture-id" for cmd, args, _, _ in calls if cmd != "ping")
+    denied_configs = [at for cmd, _, allowed, at in calls if cmd == "overlay_config" and not allowed]
+    assert all(b - a >= 0.025 for a, b in zip(denied_configs, denied_configs[1:]))
+    assert [cmd for cmd, _, _, _ in calls[-3:]] == ["overlay_config", "overlay_update", "overlay_config"]
+    assert calls[-3][1]["enabled"] and calls[-3][1]["metrics"] == ["fps"]
+    assert calls[-2][1]["values"] == {"elapsed": 14}
+    assert calls[-1][1]["enabled"] is False and calls[-1][1]["recording"] is False
+
+
+def test_overlay_close_cancels_pending_login(monkeypatch):
+    session, server = _overlay_session(monkeypatch)
+    monkeypatch.setattr(companion, "_OVERLAY_LOGIN_RETRY_SEC", 60.0)
+    calls = []
+
+    def serve():
+        with server, server.makefile("r", encoding="utf-8") as reader:
+            for line in reader:
+                request = json.loads(line)
+                calls.append(request)
+                server.sendall(b'{"ok":false,"error":"desktop-login-required"}\n')
+
+    worker = threading.Thread(target=serve, daemon=True)
+    worker.start()
+    try:
+        session.configure()
+        session.update({"elapsed": 1.0})
+        assert session.login_pending
+    finally:
+        session.close()
+        worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert not session.login_pending
+    assert [(r["cmd"], r["args"]["enabled"], r["args"]["recording"]) for r in calls] == [
+        ("overlay_config", True, True), ("overlay_config", False, False),
+    ]
 
 
 def test_overlay_close_is_idempotent_and_removes_forward(monkeypatch):

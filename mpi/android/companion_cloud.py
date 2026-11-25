@@ -45,7 +45,7 @@ class _Connection:
         self.forward = None
         self.fingerprint = None
         try:
-            self.sock, self.forward = companion._open_forwarded_socket(serial, 1.0, False)
+            self.sock, self.forward = companion._open_forwarded_socket(serial, 1.0, None)
             self.sock.settimeout(5.0)
             self.rpc = companion._Rpc(self.sock)
             hello = self.rpc.call("ping")

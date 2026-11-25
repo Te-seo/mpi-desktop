@@ -227,6 +227,34 @@ def test_guard_carries_validated_auto_stop_to_promoted_capture(guard_env):
             _create_guard(auto_stop_after_sec=invalid)
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_guard_prepares_requested_hud_before_launch_and_promotes_warm_only(guard_env, monkeypatch, enabled):
+    from mpi.android import companion
+
+    backend, emitted = guard_env
+    backend.monitor_values = [_reading(40.0)]
+    opens = []
+
+    def prepare(serial):
+        assert backend.cold_calls == 0
+        opens.append(("prepare", serial))
+
+    def open_overlay(serial, **kwargs):
+        assert backend.cold_calls == 1
+        assert kwargs["allow_cold_start"] is False
+        assert kwargs["enabled"] is enabled
+        opens.append(("open", serial))
+        raise companion.CompanionError("optional bridge unavailable")
+
+    monkeypatch.setattr(companion, "prepare_capture_bridge", prepare)
+    monkeypatch.setattr(companion, "open_overlay_session", open_overlay)
+    guard = _create_guard(overlay={"enabled": enabled})
+    api._handle_activate_temperature_guard(guard)
+    _wait_for(lambda: any(event["event"] == "snapshot" for event in emitted))
+    assert opens == ([("prepare", "USB")] if enabled else []) + [("open", "USB")]
+    api._handle_stop_temperature_guard(guard)
+
+
 def _create_preview(serial: str = "USB"):
     return api._handle_create_temperature_preview(
         {

@@ -220,6 +220,7 @@ export function LiveCaptureProvider({ children }: { children: ReactNode }) {
   useEffect(() => { messagesRef.current = t }, [t])
   const overlayTargetSerialRef = useRef<string | null>(null)
   const overlayProbeRevisionRef = useRef(0)
+  const overlayLoginTimerRef = useRef<number | undefined>(undefined)
   // An overlay toggle made while no capture id exists yet. The card stays
   // interactive through `preparing`/`waiting`, so with the temperature guard the
   // user can flip the HUD minutes before the guard launches a capture; parking
@@ -269,11 +270,44 @@ export function LiveCaptureProvider({ children }: { children: ReactNode }) {
     setSampleRetrying(false)
   }, [])
 
+  const probeOverlaySupport = useCallback(async (probeSerial: string, connect = false) => {
+    const revision = ++overlayProbeRevisionRef.current
+    const activeCapture = captureIdRef.current
+    const followLogin = connect || activeCapture !== null
+    const current = () => mountedRef.current && overlayTargetSerialRef.current === probeSerial &&
+      overlayProbeRevisionRef.current === revision &&
+      (!followLogin || captureIdRef.current === activeCapture) &&
+      (!activeCapture || overlaySettingsRef.current.enabled)
+    window.clearTimeout(overlayLoginTimerRef.current)
+
+    async function check(startHelper: boolean, retries: number) {
+      if (!current()) return
+      let status: DeviceOverlayStatus
+      try {
+        const result = await call<CompanionOverlayStatusResult>(
+          'companion_overlay_status',
+          startHelper ? { serial: probeSerial, connect: true } : { serial: probeSerial },
+          30_000
+        )
+        status = toDeviceOverlayStatus(result)
+      } catch {
+        status = { available: false, reason: 'device_unreachable' }
+      }
+      if (!current()) return
+      setOverlayStatus(status)
+      if (status.reason === 'companion_sign_in_required' && retries > 0) {
+        overlayLoginTimerRef.current = window.setTimeout(() => void check(false, retries - 1), 3_000)
+      }
+    }
+    // The helper verifies the desktop login asynchronously. Recheck across
+    // several 10-second login heartbeats after Connect or capture startup.
+    await check(connect, followLogin ? 15 : 0)
+  }, [])
+
   // Replay a parked HUD toggle the moment a capture id appears. Nothing is
   // parked unless the user changed the HUD after the start command went out —
-  // that command already carried the settings of its time — so the common path
-  // costs no extra round trip. Fire-and-forget with the same swallowed failures
-  // as the live push: the companion is allowed to be absent.
+  // that command already carried the settings of its time. Startup may have
+  // warmed the helper, so refresh the connection status when the HUD is wanted.
   // Declared up here because the once-mounted event listener below lists it as a
   // dependency, and a dep array is read during render.
   const reconcileOverlayForCapture = useCallback((newCaptureId: string) => {
@@ -281,9 +315,11 @@ export function LiveCaptureProvider({ children }: { children: ReactNode }) {
     overlayPendingPushRef.current = null
     // capturePlatformRef is locked by start() and a capture id can only exist
     // after that, so this reliably filters out iOS, which has no companion HUD.
-    if (!pending || capturePlatformRef.current !== 'android') return
-    enqueueOverlayPush(newCaptureId, pending)
-  }, [enqueueOverlayPush])
+    if (capturePlatformRef.current !== 'android') return
+    if (pending) enqueueOverlayPush(newCaptureId, pending)
+    const target = overlayTargetSerialRef.current
+    if (target && overlaySettingsRef.current.enabled) void probeOverlaySupport(target)
+  }, [enqueueOverlayPush, probeOverlaySupport])
 
   const invalidateTemperaturePreview = useCallback(() => {
     temperaturePreviewGenerationRef.current += 1
@@ -391,6 +427,7 @@ export function LiveCaptureProvider({ children }: { children: ReactNode }) {
     const previewEndedWaiters = temperaturePreviewEndedWaitersRef.current
     return () => {
       mountedRef.current = false
+      window.clearTimeout(overlayLoginTimerRef.current)
       temperaturePreviewGenerationRef.current += 1
       const activePreviewId = temperaturePreviewIdRef.current
       const activeGuardId = guardIdRef.current
@@ -882,23 +919,6 @@ export function LiveCaptureProvider({ children }: { children: ReactNode }) {
     setError(null)
     transitionTo('idle')
   }, [invalidateTemperaturePreview, operationIsLocked, transitionTo])
-
-  // Selection checks presence and an already-running helper, without permission or package changes.
-  const probeOverlaySupport = useCallback(async (probeSerial: string, connect = false) => {
-    const revision = ++overlayProbeRevisionRef.current
-    const current = () => mountedRef.current && overlayTargetSerialRef.current === probeSerial &&
-      overlayProbeRevisionRef.current === revision
-    try {
-      const result = await call<CompanionOverlayStatusResult>(
-        'companion_overlay_status',
-        connect ? { serial: probeSerial, connect: true } : { serial: probeSerial },
-        30_000
-      )
-      if (current()) setOverlayStatus(toDeviceOverlayStatus(result))
-    } catch {
-      if (current()) setOverlayStatus({ available: false, reason: 'device_unreachable' })
-    }
-  }, [])
 
   const checkPlayCompanion = useCallback((connect = false) => {
     const selected = overlayTargetSerialRef.current

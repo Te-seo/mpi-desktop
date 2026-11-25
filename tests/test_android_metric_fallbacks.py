@@ -48,7 +48,8 @@ def test_readable_proc_cpu_does_not_use_service_window(capture):
     assert sample().cpu.total_percent == 50
     assert "dumpsys cpuinfo" not in calls
     # A denied /proc/net/dev must not make adb discard valid CPU/RAM stdout.
-    assert "cat /proc/stat /proc/meminfo /proc/net/dev 2>/dev/null; true" in calls
+    assert any(command.startswith("cat /proc/stat /proc/meminfo /proc/net/dev 2>/dev/null;")
+               and command.endswith("2>/dev/null; true") for command in calls)
 
 
 @pytest.mark.parametrize("raw, busy, clock", [

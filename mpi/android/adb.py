@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
+from contextvars import ContextVar
 from typing import List, Optional
 
 
 class AdbError(RuntimeError):
     pass
+
+
+# A live capture worker can issue several shell commands for one observation.
+# Give them a shared deadline without changing timeouts for other adb users.
+shell_deadline: ContextVar[Optional[float]] = ContextVar("shell_deadline", default=None)
 
 
 # On Windows, hide the brief console flash that pops up every time we shell out
@@ -31,6 +38,9 @@ def run(
     try:
         proc = subprocess.run(
             cmd,
+            # Desktop owns stdin for JSON requests. An adb shell listening on
+            # the same pipe can consume part of the next stop or export request.
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=timeout,
             check=False,
@@ -47,7 +57,9 @@ def run(
             f"adb command timed out after {timeout:.1f}s: {' '.join(cmd)}"
         ) from exc
 
-    stdout = proc.stdout.decode("utf-8", errors="replace")
+    # Windows adb can emit CRLF even for newlines printed by the device shell.
+    # Give text parsers the same line boundaries on every host.
+    stdout = proc.stdout.decode("utf-8", errors="replace").replace("\r\n", "\n")
     stderr = proc.stderr.decode("utf-8", errors="replace")
 
     if proc.returncode != 0:
@@ -62,6 +74,12 @@ def shell(
     serial: Optional[str] = None,
     timeout: float = 30.0,
 ) -> str:
+    deadline = shell_deadline.get()
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AdbError("live sample deadline elapsed")
+        timeout = min(remaining, timeout)
     return run(["shell", command], serial=serial, timeout=timeout)
 
 
@@ -80,6 +98,7 @@ def run_bytes(
     try:
         proc = subprocess.run(
             cmd,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=timeout,
             check=False,

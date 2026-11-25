@@ -53,6 +53,25 @@ def parse_replay_memory(row, platform):
     return result
 
 
+def process_stat_and_status(raw, pid):
+    """Share the captured files unless the read crossed a process change."""
+    parts = raw.split("\n_MPI_MEM_BOUNDARY_\n")
+    if len(parts) != 8:
+        return "", ""
+    stat_before, name_before, _, status, _, name_after, stat_after, _ = parts
+    for stat in (stat_before, stat_after):
+        parsed = re.match(r"^(\d+) \(", stat)
+        if parsed and parsed[1] != str(pid):
+            return "", ""
+    before = parse_start_ticks(stat_before, pid)
+    after = parse_start_ticks(stat_after, pid)
+    if before is not None and after is not None and before != after:
+        return "", ""
+    if name_before and name_after and name_before != name_after:
+        return "", ""
+    return status, stat_after
+
+
 def read_capture_proc(raw, pid, package):
     """Exact selected process only; no memory from a reused PID."""
     parts = raw.split("\n_MPI_MEM_BOUNDARY_\n")
@@ -74,11 +93,18 @@ def read_capture_proc(raw, pid, package):
 def proc_command(pid):
     assert type(pid) is int and pid > 0
     base = f"/proc/{pid}"
-    process = f"tr '\\000' '\\n' < {base}/cmdline | head -n 1"
-    return "; printf '\\n_MPI_MEM_BOUNDARY_\\n'; ".join((
-        f"cat {base}/stat", process, f"cat {base}/oom_score_adj",
-        f"cat {base}/status", f"cat {base}/oom_score_adj", process,
-        f"cat {base}/stat", "true",
+    # Read argv[0] up to NUL and the scalar fields with Android shell builtins.
+    # Forking tr, head and printf repeatedly can exhaust a live sample's window.
+    return "; ".join((
+        f"IFS= read -r stat_before < {base}/stat",
+        f"IFS= read -r -d '' name_before < {base}/cmdline",
+        f"IFS= read -r oom_before < {base}/oom_score_adj",
+        f"status=$(cat {base}/status)",
+        f"IFS= read -r oom_after < {base}/oom_score_adj",
+        f"IFS= read -r -d '' name_after < {base}/cmdline",
+        f"IFS= read -r stat_after < {base}/stat",
+        "printf '%s\\n_MPI_MEM_BOUNDARY_\\n' "
+        '"$stat_before" "$name_before" "$oom_before" "$status" "$oom_after" "$name_after" "$stat_after"',
     ))
 
 

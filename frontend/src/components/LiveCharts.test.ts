@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { anonymousMemoryMib, currentMemoryReference, MEMORY_SOURCE, observedCategory } from '../lib/chartMemory'
+import { formatMmss } from '../lib/format'
 import type { MetricsSnapshot, Platform } from '../lib/types'
 import { buildComparisonRows, mergeComparisonRows } from './LiveCharts'
 
@@ -36,6 +37,20 @@ function cpuSnapshot({
 }
 
 describe('mergeComparisonRows', () => {
+  it('keeps half-second samples distinct in the chart, time labels and comparison', () => {
+    const sample = cpuSnapshot({ raw: 0, total: 0, normalized: 0, cores: 4 })
+    const snapshots = [0, 0.5, 1].map((elapsed_sec, index) => ({
+      ...sample, elapsed_sec, frames: { ...sample.frames, fps_estimate: 50 + index },
+    }))
+    const comparison = buildComparisonRows(snapshots)
+    expect(comparison.map(row => row.t)).toEqual([0, 0.5, 1])
+    expect(comparison.map(row => formatMmss(row.t))).toEqual(['00:00', '00:00.5', '00:01'])
+    expect(formatMmss(0.25)).toBe('00:00.25')
+    const live: Row[] = [0.25, 0.5, 0.9, 1.5].map(t => ({ t }))
+    const merged = mergeComparisonRows<Row>(live, comparison)
+    expect(merged.map(row => row['comparison:fps'])).toEqual([50, 51, 52, undefined])
+  })
+
   it('leaves live data unchanged when comparison is empty', () => {
     const live: Row[] = [{ t: 0, fps: 60 }]
     expect(mergeComparisonRows(live, [])).toBe(live)
@@ -92,6 +107,15 @@ describe('buildComparisonRows CPU semantics', () => {
 })
 
 describe('buildComparisonRows measured hardware values', () => {
+  it('keeps iOS process sizes in MiB and missing footprints as gaps during replay', () => {
+    const sample = cpuSnapshot({ platform: 'ios', raw: 0, total: 0, normalized: 0, cores: 1 })
+    const rows = buildComparisonRows([2048, null, 0].map(rss_total_kb => ({
+      ...sample, memory: { ...sample.memory, rss_total_kb },
+    })))
+    expect(rows.map(row => row.mem_ios_mib)).toEqual([2, null, null])
+    expect(rows.every(row => row.mem_ratio === null && row.mem_anon_mib === null)).toBe(true)
+  })
+
   it('resolves a legacy battery name and preserves measured idle CPU/GPU zero', () => {
     const snapshot = cpuSnapshot({ raw: 0, total: 0, normalized: 0, cores: 8 })
     snapshot.cpu.total_source = 'dumpsys_cpuinfo'

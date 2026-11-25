@@ -34,6 +34,30 @@ def test_gfxinfo_totals():
     assert stats.jank_percent == 3.29
 
 
+def test_gfxinfo_frame_streams_survive_changing_histograms():
+    def window(name: str, histogram: int) -> str:
+        return (
+            f"Window: {name}\nStats since: 100ns\nGPU HISTOGRAM: 1ms={histogram}\n"
+            "---PROFILEDATA---\nFlags,IntendedVsync,FrameCompleted\n"
+            "0,100,116\n0,100,116\n---PROFILEDATA---\n"
+        )
+
+    for count in (5, 9):
+        events = parse_gfxinfo(window("app/Main", count) + window("app/Dialog", count)).raw_events
+        assert [(event["stream_id"], event["timestamp_ns"]) for event in events] == [
+            ("app/Main", 100), ("app/Dialog", 100),
+        ]
+
+
+def test_gfxinfo_frame_stream_uses_legacy_view_root_or_block_position():
+    text = _read("gfxinfo_sample.txt")
+    root = "com.example.app/com.example.app.MainActivity/android.view.ViewRootImpl@deadbeef"
+    assert {event["stream_id"] for event in parse_gfxinfo(text).raw_events} == {root}
+
+    text = text.replace(root + " (visibility=0)", "GPU HISTOGRAM: 1ms=82")
+    assert {event["stream_id"] for event in parse_gfxinfo(text).raw_events} == {"window-0"}
+
+
 def test_battery_temperature_parses_exact_deci_celsius_field():
     text = """Current Battery Service state:
       charger temperature: 455

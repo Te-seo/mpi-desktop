@@ -1,5 +1,6 @@
-import { anonymousMemoryMib, currentMemoryReference, isAndroidAnonymousMemory, memoryChartLabel, observedCategory, type MemoryCategory } from '../lib/chartMemory'
+import { currentMemoryReference, liveMemorySeries, liveMemoryValues, observedCategory, type MemoryCategory } from '../lib/chartMemory'
 import { snapshotElapsed } from '../lib/sessionCuts'
+import { nearestTimeIndex } from '../lib/chartSeries'
 import { useMemo, useState, type ComponentProps } from 'react'
 import { GripVertical } from 'lucide-react'
 import {
@@ -48,6 +49,8 @@ interface Props {
   order: LiveMetricKey[]
   onReorder(order: LiveMetricKey[]): void
 }
+
+const EMPTY_SNAPSHOTS: MetricsSnapshot[] = []
 
 const CPU_COLORS = [
   '#3b82f6',
@@ -103,14 +106,12 @@ export function buildComparisonRows(snapshots: MetricsSnapshot[]): RowDatum[] {
   const logicalCpuCount = stableLogicalCpuCount(snapshots)
   const temperatureZone = temperatureZoneForSnapshots(snapshots)
   return snapshots.map((s, index) => {
-    const appMemKb = s.memory.pss_total_kb || s.memory.rss_total_kb || 0
-    const sysTotalKb = s.memory.sys_total_kb || 0
     const vMv = s.battery.voltage_mv ?? null
     const iMa = s.battery.current_ma ?? null
     const cpu = deriveCpuDisplayMetrics(s.cpu, s.device.platform, logicalCpuCount)
     const frameQuality = deriveFrameQualitySeries(s.frames)
     const row: RowDatum = {
-      t: Math.round(snapshotElapsed(snapshots, index)),
+      t: snapshotElapsed(snapshots, index),
       fps: s.frames.fps_estimate ?? null,
       ...frameQuality,
       small_jank: s.frames.small_jank ?? null,
@@ -118,9 +119,7 @@ export function buildComparisonRows(snapshots: MetricsSnapshot[]): RowDatum[] {
       cpu_app: cpu.appWholeDevicePercent,
       cpu_total: cpu.systemPercent,
       cpu_norm: cpu.appNormalizedPercent,
-      mem_anon_mib: anonymousMemoryMib(s),
-      mem_total_mb: s.memory.sys_used_kb ? Math.round(s.memory.sys_used_kb / 1024) : null,
-      mem_ratio: isAndroidAnonymousMemory(s) ? null : sysTotalKb > 0 && appMemKb > 0 ? Math.round((appMemKb / sysTotalKb) * 1000) / 10 : s.cpu.mem_percent || null,
+      ...liveMemoryValues(s),
       battery: s.battery.level_percent ?? null,
       battery_ma: iMa,
       voltage_mv: vMv,
@@ -141,13 +140,15 @@ export function mergeComparisonRows<T extends Record<string, number | null>>(
   comparisonRows: T[]
 ): T[] {
   if (!comparisonRows.length) return liveRows
-  const firstT = comparisonRows[0].t
-  const lastT = comparisonRows[comparisonRows.length - 1].t
+  const byTime = new Map<number, T>()
+  for (const sample of comparisonRows) {
+    if (sample.t !== null && Number.isFinite(sample.t) && !byTime.has(sample.t)) byTime.set(sample.t, sample)
+  }
+  const times = [...byTime.keys()].sort((a, b) => a - b)
+  if (!times.length) return liveRows
   return liveRows.map((row) => {
-    if (row.t === null || firstT === null || lastT === null || row.t < firstT || row.t > lastT) return row
-    const closest = comparisonRows.reduce((best, candidate) =>
-      Math.abs((candidate.t ?? 0) - row.t!) < Math.abs((best.t ?? 0) - row.t!) ? candidate : best
-    )
+    if (row.t === null || !Number.isFinite(row.t) || row.t < times[0] || row.t > times[times.length - 1]) return row
+    const closest = byTime.get(times[nearestTimeIndex(times, row.t)])!
     const merged: Record<string, number | null> = { ...row }
     for (const [key, value] of Object.entries(closest)) {
       if (key !== 't') merged[`comparison:${key}`] = value
@@ -173,13 +174,14 @@ interface MetricPlot {
   yMax?: number
 }
 
-export function LiveCharts({ snapshots, comparisonSnapshots = [], visibility, order, onReorder }: Props) {
+export function LiveCharts({ snapshots, comparisonSnapshots = EMPTY_SNAPSHOTS, visibility, order, onReorder }: Props) {
   const t = useMessages()
   const { locale } = useLocale()
   const ko = locale === 'ko'
   const sample = snapshots.at(-1)
-  const anonymous = isAndroidAnonymousMemory(sample)
-  const legacyLabel = sample?.device.platform === 'ios' ? 'iOS app memory' : 'Legacy PSS / RSS'
+  const memorySeries = useMemo(() => liveMemorySeries(sample), [sample])
+  const { key: memoryKey, label: memoryLabel, unit: memoryUnit } = memorySeries
+  const anonymous = memoryKey === 'mem_anon_mib'
   const appKey = sample ? JSON.stringify([sample.device.serial, sample.package.bundle_id]) : ''
   const [manualCategories, setManualCategories] = useState<Record<string, MemoryCategory | undefined>>({})
   const observed = observedCategory(sample)
@@ -201,8 +203,9 @@ export function LiveCharts({ snapshots, comparisonSnapshots = [], visibility, or
       <option value="game">{ko ? '게임' : 'Game'}</option>
     </select>
   ) : undefined
-  const temperatureZone = temperatureZoneForSnapshots(snapshots)
-  const comparisonTemperatureZone = temperatureZoneForSnapshots(comparisonSnapshots)
+  const temperatureZone = useMemo(() => temperatureZoneForSnapshots(snapshots), [snapshots])
+  const comparisonTemperatureZone = useMemo(() => temperatureZoneForSnapshots(comparisonSnapshots), [comparisonSnapshots])
+  const comparisonRows = useMemo(() => buildComparisonRows(comparisonSnapshots), [comparisonSnapshots])
   const primaryKeys = useMemo(() => metricPrimaryKeys(temperatureZone), [temperatureZone])
   const metricDefs = useMemo(() => localizedLiveMetrics(t.charts, temperatureZone), [t.charts, temperatureZone])
   const sensors = useSensors(
@@ -226,20 +229,9 @@ export function LiveCharts({ snapshots, comparisonSnapshots = [], visibility, or
     }
 
     const data: RowDatum[] = snapshots.map((s, index) => {
-      const t = Math.round(snapshotElapsed(snapshots, index))
+      const t = snapshotElapsed(snapshots, index)
       const zones = normalizeThermalZones(s.thermal?.zones_c)
       const cpu = deriveCpuDisplayMetrics(s.cpu, s.device.platform, logicalCpuCount)
-      // App memory: PSS when available, else RSS (live streaming reports RSS).
-      const appMemKb = s.memory.pss_total_kb || s.memory.rss_total_kb || 0
-      // App memory as a % of total RAM (the MEM card's headline 비율%). Prefer
-      // the directly-measured ratio so it matches the plotted MB; fall back to
-      // the backend-provided cpu.mem_percent when system RAM totals are absent
-      // (e.g. iOS reports no MemTotal).
-      const sysTotalKb = s.memory.sys_total_kb || 0
-      const memRatio =
-        sysTotalKb > 0 && appMemKb > 0
-          ? Math.round((appMemKb / sysTotalKb) * 1000) / 10
-          : s.cpu.mem_percent || null
       const vMv = s.battery.voltage_mv ?? null
       const iMa = s.battery.current_ma ?? null
       // Power (mW) = |V(mV) × I(mA)| / 1000. current_ma sign flips by vendor, so
@@ -255,9 +247,7 @@ export function LiveCharts({ snapshots, comparisonSnapshots = [], visibility, or
         cpu_app: cpu.appWholeDevicePercent,
         cpu_total: cpu.systemPercent,
         cpu_norm: cpu.appNormalizedPercent,
-        mem_anon_mib: anonymousMemoryMib(s),
-      mem_total_mb: s.memory.sys_used_kb ? Math.round(s.memory.sys_used_kb / 1024) : null,
-        mem_ratio: isAndroidAnonymousMemory(s) ? null : memRatio,
+        ...liveMemoryValues(s),
         battery: s.battery.level_percent ?? null,
         battery_ma: s.battery.current_ma ?? null,
         voltage_mv: vMv,
@@ -295,11 +285,9 @@ export function LiveCharts({ snapshots, comparisonSnapshots = [], visibility, or
       })
     }
 
-    const alignedData = comparisonSnapshots.length > 0
-      ? mergeComparisonRows(data, buildComparisonRows(comparisonSnapshots))
-      : data
+    const alignedData = mergeComparisonRows(data, comparisonRows)
     return { data: alignedData, cpuSeries, thermalSeries }
-  }, [snapshots, comparisonSnapshots, temperatureZone])
+  }, [snapshots, comparisonRows, temperatureZone])
 
   const plots = useMemo<Record<LiveMetricKey, MetricPlot>>(
     () => ({
@@ -363,9 +351,13 @@ export function LiveCharts({ snapshots, comparisonSnapshots = [], visibility, or
         yMin: 0,
         yMax: 100,
       },
-      mem: anonymous
-        ? { primaryKey: 'mem_anon_mib', primaryLabel: memoryChartLabel, secondary: [], yMin: 0 }
-        : { primaryKey: primaryKeys.mem, primaryLabel: legacyLabel, secondary: [{ key: 'mem_total_mb', label: 'total used', color: '#16a34a' }], yMin: 0, yMax: 100 },
+      mem: {
+        primaryKey: memoryKey,
+        primaryLabel: memoryLabel,
+        secondary: memoryUnit === '%' ? [{ key: 'mem_total_mb', label: 'total used', color: '#16a34a' }] : [],
+        yMin: 0,
+        yMax: memoryUnit === '%' ? 100 : undefined,
+      },
       power: {
         primaryKey: primaryKeys.power,
         primaryLabel: 'power',
@@ -380,7 +372,7 @@ export function LiveCharts({ snapshots, comparisonSnapshots = [], visibility, or
         yMax: 100,
       },
     }),
-    [cpuSeries, thermalSeries, t.charts, primaryKeys, temperatureZone, anonymous, legacyLabel]
+    [cpuSeries, thermalSeries, t.charts, primaryKeys, temperatureZone, memoryKey, memoryLabel, memoryUnit]
   )
 
   if (snapshots.length === 0) {
@@ -434,7 +426,7 @@ export function LiveCharts({ snapshots, comparisonSnapshots = [], visibility, or
                   metricKey={m.key}
                   label={m.label}
                   accent={m.accent}
-                  unit={m.key === 'mem' && anonymous ? 'MiB' : m.unit}
+                  unit={m.key === 'mem' ? memoryUnit : m.unit}
                   digits={m.digits}
                   helpText={m.key === 'mem' && anonymous
                     ? (ko ? '선택한 프로세스의 RssAnon + VmSwap입니다. 기기에서 확인할 수 없는 구간은 비워 둡니다. 기준선은 최신 상태의 로컬 참고값이며 Play Vitals 판정이 아닙니다.'
@@ -452,8 +444,7 @@ export function LiveCharts({ snapshots, comparisonSnapshots = [], visibility, or
                   secondary={secondary}
                   comparisonKey={comparisonSnapshots.length > 0 &&
                     (m.key !== 'temp' || temperatureZone === comparisonTemperatureZone) &&
-                    (m.key !== 'mem' || (anonymous === isAndroidAnonymousMemory(comparisonSnapshots.at(-1)) &&
-                      sample?.device.platform === comparisonSnapshots.at(-1)?.device.platform))
+                    (m.key !== 'mem' || memoryKey === liveMemorySeries(comparisonSnapshots.at(-1)).key)
                     ? `comparison:${plot.primaryKey}` : undefined}
                   comparisonSecondary={comparisonSecondary}
                   comparisonLabel={t.liveTracing.comparisonLegend}
@@ -465,8 +456,8 @@ export function LiveCharts({ snapshots, comparisonSnapshots = [], visibility, or
           </div>
         </SortableContext>
       </DndContext>
-      <HoverOverlay data={data} temperatureZone={temperatureZone} anonymousMemory={anonymous} legacyMemoryLabel={legacyLabel} />
-      <SummaryOverlay data={data} snapshots={snapshots} />
+      <HoverOverlay data={data} temperatureZone={temperatureZone} memorySeries={memorySeries} />
+      <SummaryOverlay data={data} snapshots={snapshots} memorySeries={memorySeries} />
     </LiveCrosshairProvider>
   )
 }

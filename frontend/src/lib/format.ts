@@ -9,12 +9,14 @@ export function formatHms(totalSec: number): string {
   return `${h}:${m}:${sec}`
 }
 
-/** Seconds → M:SS (used for chart time-axis ticks). */
+/** Chart times in MM:SS with fractional seconds for sub-second ticks and samples. */
 export function formatMmss(totalSec: number): string {
-  const s = Math.max(0, Math.round(totalSec))
+  const milliseconds = Math.max(0, Math.round(totalSec * 1000))
+  const s = Math.floor(milliseconds / 1000)
   const m = String(Math.floor(s / 60)).padStart(2, '0')
   const sec = String(s % 60).padStart(2, '0')
-  return `${m}:${sec}`
+  const fraction = String(milliseconds % 1000).padStart(3, '0').replace(/0+$/, '')
+  return fraction ? `${m}:${sec}.${fraction}` : `${m}:${sec}`
 }
 
 /** Compact axis label: 6000 → "6k", 3200 → "3.2k", small values pass through. */

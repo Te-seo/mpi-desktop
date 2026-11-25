@@ -282,11 +282,12 @@ export function LiveTracing() {
 
   const statusMessage = useMemo(() => {
     if (capture.error) return friendlyError(capture.error, t.errors)
+    if (capture.phase === 'running' && capture.sampleRetrying) return t.liveTracing.retryingSample
     if (capture.phase === 'waiting' && capture.guardId) return `guard_id=${capture.guardId}`
     if (capture.isRunning && capture.captureId) return `capture_id=${capture.captureId}`
     if (!capture.isRunning && capture.snapshots.length > 0) return t.liveTracing.canStartNew
     return null
-  }, [capture.error, capture.phase, capture.guardId, capture.isRunning, capture.captureId, capture.snapshots.length, t])
+  }, [capture.error, capture.phase, capture.sampleRetrying, capture.guardId, capture.isRunning, capture.captureId, capture.snapshots.length, t])
 
   const chip = useMemo(() => buildChip(capture, t.liveTracing), [capture, t])
   const overlayMetricLabels = buildOverlayMetricLabels(t.liveTracing)

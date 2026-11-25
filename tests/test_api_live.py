@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import socket
+import subprocess
 import threading
 import time
 from datetime import datetime, timezone
@@ -29,6 +30,16 @@ from mpi.schema import (
     Platform,
     ThermalStats,
 )
+
+
+@pytest.mark.parametrize("run_adb", [adb.run, adb.run_bytes])
+def test_capture_adb_commands_leave_json_input_to_the_engine(monkeypatch, run_adb):
+    def invoke(command, **kwargs):
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(subprocess, "run", invoke)
+    run_adb(["shell", "cat"], serial="fake")
 
 
 def _batched_android_getprop() -> str:
@@ -246,10 +257,11 @@ def test_prepare_wireless_routes_to_ios_backend(fake_ios_backend):
 
 def test_start_capture_returns_id_and_records_active(fake_backend, captured_emits):
     result = api._handle_start_capture(
-        {"serial": "FAKE-SERIAL-1", "package": "com.example.alpha", "duration_sec": 0.05}
+        {"serial": "FAKE-SERIAL-1", "package": "com.example.alpha"}
     )
     assert "capture_id" in result
     assert result["device"].serial == "FAKE-SERIAL-1"
+    assert result["duration_sec"] == 0.5
     assert result["package"].bundle_id == "com.example.alpha"
     cid = result["capture_id"]
     with api._captures_lock:
@@ -270,10 +282,10 @@ def test_start_capture_routes_to_ios_streaming_backend(fake_ios_backend, capture
             "platform": "ios",
             "serial": "IOS-UDID-1",
             "package": "com.example.iosgame",
-            "duration_sec": 0.02,
         }
     )
     assert result["platform"] == "ios"
+    assert result["duration_sec"] == 1.0
     assert result["device"].platform == Platform.IOS
     cid = result["capture_id"]
 
@@ -311,6 +323,29 @@ def test_stop_capture_unknown_id_returns_not_running(fake_backend):
     assert result["status"] == "not_running"
 
 
+@pytest.mark.parametrize(("read_time", "backoff"), [(0.125, 0.375), (0.5, 0), (1.0, 0)])
+def test_capture_error_retries_on_next_sample_interval(monkeypatch, captured_emits, read_time, backoff):
+    now = [10.0]
+    waits = []
+    stop = threading.Event()
+    monkeypatch.setattr(api.time, "monotonic", lambda: now[0])
+
+    class FailingSession:
+        def sample(self, duration_sec):
+            now[0] += read_time
+            raise OSError("unavailable")
+
+    def wait_and_stop(timeout):
+        waits.append(timeout)
+        stop.set()
+
+    monkeypatch.setattr(stop, "wait", wait_and_stop)
+    api._capture_pump("test-retry", FailingSession(), stop, 0.5)
+    assert waits == [backoff]
+    assert [event["event"] for event in captured_emits] == ["capture_error", "capture_ended"]
+    assert captured_emits[0]["recoverable"] is True
+
+
 def test_start_capture_validates_inputs(fake_backend):
     with pytest.raises(ValueError):
         api._handle_start_capture({"serial": "x"})  # missing package
@@ -320,10 +355,11 @@ def test_start_capture_validates_inputs(fake_backend):
         api._handle_start_capture(
             {"serial": "x", "package": "y", "duration_sec": 0}
         )
-    with pytest.raises(ValueError):
-        api._handle_start_capture(
-            {"serial": "x", "package": "y", "duration_sec": -1}
-        )
+    for interval in (-1, True, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            api._handle_start_capture(
+                {"serial": "x", "package": "y", "duration_sec": interval}
+            )
     for value in (True, "2", 0, -1, float("nan"), float("inf"), 3601):
         with pytest.raises(ValueError):
             api._handle_start_capture(

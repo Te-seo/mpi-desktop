@@ -18,6 +18,11 @@ _GFX_FRAME_DEADLINE = re.compile(r"Number Frame deadline missed:\s*(\d+)")
 _GFX_PROFILEDATA = re.compile(
     r"---PROFILEDATA---\s*(.*?)\s*---PROFILEDATA---", re.DOTALL
 )
+_GFX_WINDOW = re.compile(r"^[ \t]*Window:[ \t]*([^\r\n]+)", re.MULTILINE)
+_GFX_VIEW_ROOT = re.compile(
+    r"^[ \t]*([^ \t\r\n][^\r\n]*?/android\.view\.ViewRootImpl@[0-9a-fA-F]+)",
+    re.MULTILINE,
+)
 
 
 def parse_gfxinfo(text: str) -> FrameStats:
@@ -25,8 +30,9 @@ def parse_gfxinfo(text: str) -> FrameStats:
     if not text:
         return stats
 
-    if m := _GFX_TOTAL_FRAMES.search(text):
-        stats.total_frames = int(m.group(1))
+    count = _GFX_TOTAL_FRAMES.search(text)
+    if count is not None:
+        stats.total_frames = int(count.group(1))
     if m := _GFX_JANKY.search(text):
         stats.janky_frames = int(m.group(1))
         stats.jank_percent = float(m.group(2))
@@ -57,7 +63,7 @@ def parse_gfxinfo(text: str) -> FrameStats:
 
     stats.fps_estimate = _estimate_fps(text)
     stats.raw_events, stats.raw_events_dropped = _parse_frame_events(text)
-    if stats.total_frames or stats.raw_events:
+    if count is not None or stats.raw_events:
         stats.source = "android_gfxinfo_framestats"
         stats.scope = "app_window"
     return stats
@@ -70,9 +76,12 @@ def _parse_frame_events(text: str, limit: int = 4096) -> Tuple[List[Dict[str, An
     dropped = 0
     previous_end = 0
     for block_index, match in enumerate(_GFX_PROFILEDATA.finditer(text)):
-        prefix = [line.strip() for line in text[previous_end:match.start()].splitlines()
-                  if line.strip() and not line.startswith("Stats since:")]
-        stream = prefix[-1] if prefix else f"window-{block_index}"
+        # Android can put per-dump GPU histograms between the window title and
+        # PROFILEDATA. Only a window identifier can link frames across dumps.
+        window = _GFX_WINDOW.search(text, previous_end, match.start())
+        if window is None:
+            window = _GFX_VIEW_ROOT.search(text, previous_end, match.start())
+        stream = window.group(1).strip() if window else f"window-{block_index}"
         previous_end = match.end()
         lines = [line.strip() for line in match.group(1).splitlines() if line.strip()]
         if not lines:
@@ -733,11 +742,9 @@ def fps_from_histogram_rate_hints(
     return fps_from_histogram(histogram)
 
 
-def parse_proc_status_rss_kb(text: str) -> int:
-    if not text:
-        return 0
+def parse_proc_status_rss_kb(text: str) -> Optional[int]:
     m = _PROC_STATUS_VMRSS.search(text)
-    return int(m.group(1)) if m else 0
+    return int(m.group(1)) if m else None
 
 
 def parse_proc_meminfo_total_kb(text: str) -> int:

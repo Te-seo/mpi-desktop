@@ -1,7 +1,7 @@
 {
   "name": "mpi-frontend",
   "private": true,
-  "version": "2026.11.24-1",
+  "version": "2026.11.25-2",
   "description": "MPI",
   "author": "mpi",
   "license": "GPL-3.0-or-later",
@@ -63,8 +63,8 @@
     "wait-on": "^9.0.3"
   },
   "build": {
-    "buildVersion": "2026.11.24.1",
-    "buildNumber": "1",
+    "buildVersion": "2026.11.25.2",
+    "buildNumber": "2",
     "appId": "com.mpi.app",
     "productName": "MPI",
     "afterSign": "scripts/after-pack-alias.cjs",

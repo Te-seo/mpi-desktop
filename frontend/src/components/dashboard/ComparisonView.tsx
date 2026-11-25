@@ -5,6 +5,7 @@ import type { SessionAnalysis } from '../../lib/types'
 import { fmt, fmtDuration } from './statFormat'
 import { METRIC_COLORS, SESSION_COLORS, SESSION_LABELS } from './sessionColors'
 import { deltaParts, mismatchDims, type MismatchDim } from './compareMath'
+import { sessionMemoryLabels, sessionMemoryType, sessionMemoryUnit, sessionPeakMemory } from './sessionMemory'
 
 interface Row {
   label: string
@@ -46,6 +47,14 @@ export function ComparisonView({
     return s >= 0 ? s : analyses.indexOf(a)
   }
 
+  const memoryTypes = [...new Set(analyses.map(sessionMemoryType))]
+  const memoryRows: Row[] = memoryTypes.map(type => ({
+    label: type === 'anonymous' || memoryTypes.length > 1 ? `${d.detail.peak} ${sessionMemoryLabels[type]}` : d.kpi.peakAppMemory,
+    unit: sessionMemoryUnit(type),
+    digits: 0,
+    get: (a) => sessionMemoryType(a) === type ? sessionPeakMemory(a) : null,
+  }))
+
   const groups: RowGroup[] = [
     {
       tick: METRIC_COLORS.fps,
@@ -70,7 +79,7 @@ export function ComparisonView({
         { label: d.detail.systemCpu, unit: d.units.percent, digits: 1, get: (a) => a.metrics.cpu_system?.average ?? null },
         { label: d.detail.normalizedCpu, unit: d.units.percent, digits: 1, get: (a) => a.metrics.cpu_norm?.average ?? null },
         { label: d.detail.busy, unit: d.units.percent, digits: 1, get: (a) => a.metrics.gpu_busy?.average ?? null },
-        { label: d.kpi.peakAppMemory, unit: d.units.mb, digits: 0, get: (a) => a.peak_app_memory_mb },
+        ...memoryRows,
         { label: d.kpi.avgPower, unit: d.units.mw, digits: 0, get: (a) => a.metrics.power_mw?.average ?? null },
       ],
     },

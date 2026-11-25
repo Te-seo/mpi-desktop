@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { formatMmss, formatValue } from '../lib/format'
+import { nearestTimeIndex } from '../lib/chartSeries'
 import {
   localizedLiveMetrics,
   metricPrimaryKeys,
@@ -9,6 +10,7 @@ import {
 } from '../lib/liveMetrics'
 import { useCrosshair } from './liveCrosshair'
 import { useMessages } from '../lib/i18n'
+import { liveMemorySeries } from '../lib/chartMemory'
 import type { TemperatureZone } from '../lib/thermalMetrics'
 
 interface Props {
@@ -17,35 +19,20 @@ interface Props {
    *  what the cards plot. */
   data: Record<string, number | null>[]
   temperatureZone?: TemperatureZone
-  anonymousMemory?: boolean
-  legacyMemoryLabel?: string
+  memorySeries?: ReturnType<typeof liveMemorySeries>
 }
 
 /** Magnetic radius: when the cursor is within this many seconds of a pin, the
  *  overlay snaps to that pin's data (~1px at typical scale, per spec). */
 const PIN_SNAP_SEC = 1
 
-/** Index of the value in a sorted ascending array nearest to `target`. O(log n). */
-function nearestIndex(sorted: number[], target: number): number {
-  let lo = 0
-  let hi = sorted.length - 1
-  if (hi < 0) return -1
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (sorted[mid] < target) lo = mid + 1
-    else hi = mid
-  }
-  if (lo > 0 && Math.abs(sorted[lo - 1] - target) <= Math.abs(sorted[lo] - target)) return lo - 1
-  return lo
-}
-
-export function HoverOverlay({ data, temperatureZone = 'battery', anonymousMemory = false, legacyMemoryLabel }: Props) {
+export function HoverOverlay({ data, temperatureZone = 'battery', memorySeries = liveMemorySeries() }: Props) {
   const msg = useMessages()
   const metricByKey = useMemo<Record<string, LiveMetricDef>>(
     () => Object.fromEntries(localizedLiveMetrics(msg.charts, temperatureZone).map((m) => [m.key, m] as const)),
     [msg.charts, temperatureZone]
   )
-  const primaryKeys = { ...metricPrimaryKeys(temperatureZone), ...(anonymousMemory ? { mem: 'mem_anon_mib' } : {}) }
+  const primaryKeys = { ...metricPrimaryKeys(temperatureZone), mem: memorySeries.key }
   const { hoverT, hoverKey, pins } = useCrosshair()
   const [pos, setPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
 
@@ -95,7 +82,7 @@ export function HoverOverlay({ data, temperatureZone = 'battery', anonymousMemor
   const activeKey = snapped ? nearestPinKey : hoverKey
 
   // Closest row to the crosshair time via binary search — O(log n).
-  const idx = nearestIndex(times, t)
+  const idx = nearestTimeIndex(times, t)
   const row = data[idx < 0 ? 0 : idx]
   const valueOf = (key: LiveMetricKey): number | null => {
     const v = row[primaryKeys[key]]
@@ -112,8 +99,7 @@ export function HoverOverlay({ data, temperatureZone = 'battery', anonymousMemor
 
   const def = activeKey ? metricByKey[activeKey] : undefined
   const headlineDef = activeKey === 'mem' && def
-    ? { ...def, label: anonymousMemory ? 'Anonymous RSS + Swap' : legacyMemoryLabel ?? def.label,
-        unit: anonymousMemory ? 'MiB' : def.unit }
+    ? { ...def, label: memorySeries.label, unit: memorySeries.unit }
     : def
 
   // Position: offset from cursor, but clamp to viewport so it never goes off-screen.

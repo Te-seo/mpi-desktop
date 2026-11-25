@@ -8,6 +8,32 @@ export const isAndroidAnonymousMemory = (s?: MetricsSnapshot) =>
 
 export const memoryChartLabel = 'Anonymous RSS + Swap'
 
+const anonymousSeries = { key: 'mem_anon_mib', label: memoryChartLabel, unit: 'MiB' } as const
+const iosSeries = { key: 'mem_ios_mib', label: 'iOS app memory', unit: 'MiB' } as const
+const legacySeries = { key: 'mem_ratio', label: 'Legacy PSS / RSS', unit: '%' } as const
+
+export function liveMemorySeries(s?: MetricsSnapshot) {
+  if (s?.device.platform === 'ios') return iosSeries
+  return isAndroidAnonymousMemory(s) ? anonymousSeries : legacySeries
+}
+
+export function liveMemoryValues(s: MetricsSnapshot) {
+  const { pss_total_kb, rss_total_kb, sys_total_kb, sys_used_kb } = s.memory
+  const appKiB = [pss_total_kb, rss_total_kb].find(
+    (value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0,
+  )
+  const legacyRatio = sys_total_kb > 0 && appKiB !== undefined
+    ? Math.round((appKiB / sys_total_kb) * 1000) / 10
+    : s.cpu.mem_percent || null
+  const series = liveMemorySeries(s)
+  return {
+    mem_anon_mib: anonymousMemoryMib(s),
+    mem_ios_mib: series === iosSeries && appKiB !== undefined ? appKiB / 1024 : null,
+    mem_total_mb: sys_used_kb ? Math.round(sys_used_kb / 1024) : null,
+    mem_ratio: series === legacySeries ? legacyRatio : null,
+  }
+}
+
 export function anonymousMemoryMib(s: MetricsSnapshot): number | null {
   if (!isAndroidAnonymousMemory(s)) return null
   const value = s.memory.anon_rss_plus_swap_kib

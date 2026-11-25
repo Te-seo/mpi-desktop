@@ -156,6 +156,7 @@ export function LiveCaptureProvider({ children }: { children: ReactNode }) {
   const [captureStart, setCaptureStart] = useState<number | null>(null)
   const [nowTick, setNowTick] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const [sampleRetrying, setSampleRetrying] = useState(false)
   const [exportingCsv, setExportingCsv] = useState(false)
   const [exportingXlsx, setExportingXlsx] = useState(false)
   const [starting, setStarting] = useState(false)
@@ -265,6 +266,7 @@ export function LiveCaptureProvider({ children }: { children: ReactNode }) {
   const updateCaptureId = useCallback((next: string | null) => {
     captureIdRef.current = next
     setCaptureId(next)
+    setSampleRetrying(false)
   }, [])
 
   // Replay a parked HUD toggle the moment a capture id appears. Nothing is
@@ -584,6 +586,7 @@ export function LiveCaptureProvider({ children }: { children: ReactNode }) {
       }
       if (msg.event === 'capture_state' && msg.capture_id === captureIdRef.current) {
         const paused = msg.paused === true
+        if (paused) setSampleRetrying(false)
         isPausedRef.current = paused
         setIsPaused(paused)
         const now = Date.now()
@@ -619,9 +622,15 @@ export function LiveCaptureProvider({ children }: { children: ReactNode }) {
         // the event-stream ref authoritative so a one-sample capture persists.
         snapshotsRef.current = kept
         setSnapshots(kept)
+        setSampleRetrying(false)
         setStarting(false)
         if (!isPausedRef.current && phaseRef.current !== 'stopping' && phaseRef.current !== 'running') transitionTo('running')
       } else if (msg.event === 'capture_error' && msg.capture_id === captureIdRef.current) {
+        if (msg.recoverable === true) {
+          if (phaseRef.current === 'running') setSampleRetrying(true)
+          return
+        }
+        setSampleRetrying(false)
         setError(`capture error: ${msg.error}`)
         setStarting(false)
         transitionTo('error')
@@ -1455,6 +1464,7 @@ export function LiveCaptureProvider({ children }: { children: ReactNode }) {
       latest,
       elapsedSec,
       error,
+      sampleRetrying,
       exportingCsv,
       exportingXlsx,
       starting,
@@ -1513,6 +1523,7 @@ export function LiveCaptureProvider({ children }: { children: ReactNode }) {
       latest,
       elapsedSec,
       error,
+      sampleRetrying,
       exportingCsv,
       exportingXlsx,
       starting,

@@ -34,6 +34,7 @@ export interface LiveCaptureState {
   latest: MetricsSnapshot | null
   elapsedSec: number
   error: string | null
+  sampleRetrying: boolean
   exportingCsv: boolean
   exportingXlsx: boolean
   starting: boolean

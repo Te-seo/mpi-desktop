@@ -2,9 +2,24 @@ import { describe, expect, it } from 'vitest'
 import { screen } from '@testing-library/react'
 import { renderWithLocale } from '../../test/utils'
 import { makeAnalysis, makeStats } from '../../test/fixtures'
+import { MEMORY_SOURCE } from '../../lib/chartMemory'
 import { SessionAnalysisView } from './SessionAnalysisView'
 
 describe('SessionAnalysisView', () => {
+  it('uses Android anonymous memory for the KPI and detail statistics', () => {
+    const base = makeAnalysis()
+    renderWithLocale(<SessionAnalysisView analysis={{
+      ...base, memory_source: MEMORY_SOURCE,
+      metrics: { ...base.metrics, anon_rss_plus_swap_mib: makeStats({ max: 321, average: 222 }) },
+    }} />)
+    expect(screen.getByText('Peak Anonymous RSS + Swap')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Anonymous RSS + Swap' })).toBeInTheDocument()
+    expect(screen.getAllByText('321')).toHaveLength(2)
+    expect(screen.getByText('222')).toBeInTheDocument()
+    expect(screen.getAllByText('MiB')).toHaveLength(2)
+    expect(screen.queryByText('250')).not.toBeInTheDocument()
+    expect(screen.queryByText(/of total RAM/)).not.toBeInTheDocument()
+  })
   it('keeps the user alias separate from recorded iOS model identity', () => {
     renderWithLocale(<SessionAnalysisView analysis={makeAnalysis({
       platform: 'ios', device_model: 'iPhone 18 Pro Max', device_display_name: 'Lab phone',

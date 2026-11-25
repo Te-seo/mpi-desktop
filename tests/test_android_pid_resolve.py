@@ -172,12 +172,18 @@ class _FakeBackend:
         self._resolver = resolver
 
     def _safe_shell(self, serial, command):
+        if "_MPI_PROC_BOUNDARY_" in command:
+            return "\n_MPI_PROC_BOUNDARY_\n" * 2
+        if command == "dumpsys battery":
+            return "level: 50"
+        if "ResumedActivity" in command:
+            return "com.example.game/.Main"
         return ""
 
     def _detect_max_refresh_hz(self, serial):
         return 60
 
-    def _resolve_pid(self, serial, bundle_id, uid):
+    def _resolve_pid(self, serial, bundle_id, uid, **_kwargs):
         return self._resolver()
 
 
@@ -198,7 +204,7 @@ def _make_session(resolver):
 def test_check_app_alive_reattaches_via_fallback():
     session = _make_session(lambda: 222)
     session._gone_streak = 1
-    session._check_app_alive()
+    session.sample(0)
     assert session.pid == 222
     assert session._gone_streak == 0
     # CPU baseline must be re-seeded for the new pid.
@@ -208,16 +214,16 @@ def test_check_app_alive_reattaches_via_fallback():
 def test_check_app_alive_same_pid_resets_streak():
     session = _make_session(lambda: 111)
     session._gone_streak = 1
-    session._check_app_alive()
+    session.sample(0)
     assert session.pid == 111
     assert session._gone_streak == 0
 
 
 def test_check_app_alive_raises_after_two_gone_samples():
     session = _make_session(lambda: 0)
-    session._check_app_alive()
+    session.sample(0)
     with pytest.raises(AppExitedError):
-        session._check_app_alive()
+        session.sample(0)
 
 
 def test_check_app_alive_transport_error_is_not_app_exit():
@@ -226,5 +232,5 @@ def test_check_app_alive_transport_error_is_not_app_exit():
 
     session = _make_session(resolver)
     session._gone_streak = 1
-    session._check_app_alive()  # must not raise, must not bump the streak
+    session.sample(0)  # must not raise, must not bump the streak
     assert session._gone_streak == 1

@@ -271,6 +271,7 @@ TEMPERATURE_GUARD_SAMPLE_INTERVAL_SEC = 1.0
 TEMPERATURE_GUARD_FIRST_READING_TIMEOUT_SEC = 45.0
 SHUTDOWN_JOIN_TIMEOUT_SEC = 5.0
 DEFAULT_TEMPERATURE_GUARD_THRESHOLD_C = 25.0
+_DEFAULT_CAPTURE_INTERVAL_SEC = {"android": 0.5, "ios": 1.0}
 _MIN_BATTERY_TEMPERATURE_C = 5.0
 _MAX_BATTERY_TEMPERATURE_C = 60.0
 AUTO_STOP_MIN_SEC = 1.0
@@ -1859,6 +1860,7 @@ def _capture_pump(
                 context = _active_captures.get(capture_id)
                 generation = context.pause_generation if context else 0
                 was_paused = context is not None and context.pause_started_at is not None
+            attempt_started = time.monotonic()
             try:
                 snap = session.sample(duration_sec)  # type: ignore[attr-defined]
             except (AppExitedError, AppBackgroundedError) as exc:
@@ -1907,8 +1909,9 @@ def _capture_pump(
                         "error": f"{type(exc).__name__}: {exc}",
                     }
                 )
-                # Brief pause to avoid hot-spinning on repeated errors
-                stop.wait(timeout=duration_sec)
+                # A timed-out read can already have used the entire interval.
+                # Throttle fast failures without skipping the next viable tick.
+                stop.wait(timeout=max(0.0, duration_sec - (time.monotonic() - attempt_started)))
                 continue
             if stop.is_set():
                 break
@@ -2022,8 +2025,8 @@ def _handle_start_capture(payload: Dict[str, Any]) -> Dict[str, Any]:
     serial = str(serial)
 
     raw_duration = payload.get("duration_sec")
-    duration_sec = float(raw_duration) if raw_duration is not None else 1.0
-    if duration_sec <= 0:
+    duration_sec = float(raw_duration) if raw_duration is not None else _DEFAULT_CAPTURE_INTERVAL_SEC[platform]
+    if isinstance(raw_duration, bool) or not math.isfinite(duration_sec) or duration_sec <= 0:
         raise ValueError("duration_sec must be > 0")
     auto_stop_after_sec = _parse_auto_stop_after_sec(payload)
     overlay_config = _parse_overlay_config(payload)
@@ -2999,7 +3002,7 @@ def _handle_create_temperature_guard(payload: Dict[str, Any]) -> Dict[str, Any]:
     cold_start = payload.get("cold_start", True)
     if not isinstance(cold_start, bool):
         raise ValueError("cold_start must be a boolean")
-    duration_raw = payload.get("duration_sec", 1.0)
+    duration_raw = payload.get("duration_sec", _DEFAULT_CAPTURE_INTERVAL_SEC[platform])
     if isinstance(duration_raw, bool):
         raise ValueError("duration_sec must be > 0")
     try:

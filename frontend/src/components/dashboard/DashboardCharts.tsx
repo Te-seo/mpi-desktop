@@ -13,9 +13,10 @@ import {
   YAxis,
 } from 'recharts'
 import { useLocale, useMessages } from '../../lib/i18n'
-import { MEMORY_SOURCE, memoryChartLabel, playReference, type MemoryCategory } from '../../lib/chartMemory'
+import { playReference, type MemoryCategory } from '../../lib/chartMemory'
 import type { SessionAnalysis } from '../../lib/types'
 import { fmt } from './statFormat'
+import { sessionMemoryLabels, sessionMemoryType, sessionMemoryUnit } from './sessionMemory'
 import {
   METRIC_COLORS,
   SESSION_COLORS,
@@ -43,7 +44,7 @@ interface ChartDef {
   digits: number
   note?: string
   horizontalReference?: { value: number; label: string }
-  memoryType?: 'anonymous' | 'legacy' | 'ios'
+  memoryType?: keyof typeof sessionMemoryLabels
 }
 
 /** The 8 full-width dashboard charts, shared by single-session and comparison.
@@ -64,7 +65,7 @@ export function DashboardCharts({
   const c = t.dashboard.charts
   const { locale } = useLocale()
   const ko = locale === 'ko'
-  const memoryType = analyses.some(a => a.platform === 'android' && a.memory_source === MEMORY_SOURCE)
+  const memoryType = analyses.some(a => sessionMemoryType(a) === 'anonymous')
     ? 'anonymous' : analyses.length && analyses.every(a => a.platform === 'ios') ? 'ios' : 'legacy'
   const single = analyses.length === 1 ? analyses[0] : undefined
   const context = single?.memory_reference_context
@@ -139,10 +140,10 @@ export function DashboardCharts({
       { key: 'gpu', label: c.gpu, unit: t.dashboard.units.percent, yMin: 0, series: [metricSeries('gpu', c.gpu, ts('gpu_busy'))], digits: 1 },
       {
         key: 'mem', memoryType,
-        label: memoryType === 'anonymous' ? memoryChartLabel : memoryType === 'ios' ? 'iOS app memory' : 'Legacy PSS / RSS',
-        unit: memoryType === 'anonymous' ? 'MiB' : t.dashboard.units.mb,
+        label: sessionMemoryLabels[memoryType],
+        unit: sessionMemoryUnit(memoryType),
         yMin: 0,
-        series: [metricSeries('mem', memoryType === 'anonymous' ? memoryChartLabel : c.memory,
+        series: [metricSeries('mem', memoryType === 'anonymous' ? sessionMemoryLabels.anonymous : c.memory,
           memoryType === 'anonymous' ? ts('anon_rss_plus_swap_mib') : ts('app_memory_mb'))], digits: 0,
         horizontalReference: ref ? {
           value: ref.mib,
@@ -481,8 +482,5 @@ function resolveLineDash(
 }
 
 function matchesMemorySource(type: ChartDef['memoryType'], analysis: SessionAnalysis): boolean {
-  if (type === 'anonymous') return analysis.platform === 'android' && analysis.memory_source === MEMORY_SOURCE
-  if (type === 'ios') return analysis.platform === 'ios'
-  if (type === 'legacy') return analysis.platform !== 'ios' && analysis.memory_source !== MEMORY_SOURCE
-  return true
+  return type == null || type === sessionMemoryType(analysis)
 }

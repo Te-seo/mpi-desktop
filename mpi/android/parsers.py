@@ -25,8 +25,9 @@ def parse_gfxinfo(text: str) -> FrameStats:
     if not text:
         return stats
 
-    if m := _GFX_TOTAL_FRAMES.search(text):
-        stats.total_frames = int(m.group(1))
+    count = _GFX_TOTAL_FRAMES.search(text)
+    if count is not None:
+        stats.total_frames = int(count.group(1))
     if m := _GFX_JANKY.search(text):
         stats.janky_frames = int(m.group(1))
         stats.jank_percent = float(m.group(2))
@@ -57,7 +58,7 @@ def parse_gfxinfo(text: str) -> FrameStats:
 
     stats.fps_estimate = _estimate_fps(text)
     stats.raw_events, stats.raw_events_dropped = _parse_frame_events(text)
-    if stats.total_frames or stats.raw_events:
+    if count is not None or stats.raw_events:
         stats.source = "android_gfxinfo_framestats"
         stats.scope = "app_window"
     return stats
@@ -733,11 +734,9 @@ def fps_from_histogram_rate_hints(
     return fps_from_histogram(histogram)
 
 
-def parse_proc_status_rss_kb(text: str) -> int:
-    if not text:
-        return 0
+def parse_proc_status_rss_kb(text: str) -> Optional[int]:
     m = _PROC_STATUS_VMRSS.search(text)
-    return int(m.group(1)) if m else 0
+    return int(m.group(1)) if m else None
 
 
 def parse_proc_meminfo_total_kb(text: str) -> int:

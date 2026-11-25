@@ -2,6 +2,20 @@ export type ChartRow = Record<string, number | null>
 
 export const MAX_PLOT_POINTS = 700
 
+/** Nearest sample on an ascending time axis. Ties select the earlier time. */
+export function nearestTimeIndex(sorted: number[], target: number): number {
+  let lo = 0
+  let hi = sorted.length - 1
+  if (hi < 0) return -1
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (sorted[mid] < target) lo = mid + 1
+    else hi = mid
+  }
+  if (lo > 0 && Math.abs(sorted[lo - 1] - target) <= Math.abs(sorted[lo] - target)) return lo - 1
+  return lo
+}
+
 function finiteValue(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }

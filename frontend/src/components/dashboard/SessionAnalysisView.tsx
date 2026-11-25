@@ -4,6 +4,7 @@ import { useMessages } from '../../lib/i18n'
 import type { MetricStats, SessionAnalysis } from '../../lib/types'
 import { coverageLow, fmt, fmtDuration, fmtInt, fmtTimestamp } from './statFormat'
 import { METRIC_COLORS } from './sessionColors'
+import { sessionMemoryLabels, sessionMemoryType, sessionMemoryUnit, sessionPeakMemory } from './sessionMemory'
 
 /** Single-session analysis: slim identity strip, two-tier KPI grid, and a
  *  unified diagnosis grid. Every card shares one grammar: a metric-colored
@@ -13,6 +14,12 @@ export function SessionAnalysisView({ analysis }: { analysis: SessionAnalysis })
   const t = useMessages()
   const d = t.dashboard
   const m = analysis.metrics
+  const memoryType = sessionMemoryType(analysis)
+  const anonymousMemory = memoryType === 'anonymous'
+  const peakMemory = sessionPeakMemory(analysis)
+  const memoryUnit = sessionMemoryUnit(memoryType)
+  const memoryStats = anonymousMemory ? m.anon_rss_plus_swap_mib : m.app_memory_mb
+  const memoryRatio = anonymousMemory ? null : analysis.memory_ratio_percent
   const appLabel = analysis.app_label?.trim()
   const appName = appLabel || analysis.bundle_id?.trim() || d.unknownApp
 
@@ -42,12 +49,12 @@ export function SessionAnalysisView({ analysis }: { analysis: SessionAnalysis })
       tick: METRIC_COLORS.temp,
     },
     {
-      label: d.kpi.peakAppMemory,
-      value: fmt(analysis.peak_app_memory_mb, 0),
-      unit: d.units.mb,
+      label: anonymousMemory ? `${d.detail.peak} ${sessionMemoryLabels.anonymous}` : d.kpi.peakAppMemory,
+      value: fmt(peakMemory, 0),
+      unit: memoryUnit,
       sub:
-        analysis.memory_ratio_percent != null
-          ? `${fmt(analysis.memory_ratio_percent, 1)}% ${d.detail.ratioOfRam}`
+        memoryRatio != null
+          ? `${fmt(memoryRatio, 1)}% ${d.detail.ratioOfRam}`
           : undefined,
       tick: METRIC_COLORS.mem,
     },
@@ -163,13 +170,13 @@ export function SessionAnalysisView({ analysis }: { analysis: SessionAnalysis })
             ]}
           />
         </Card>
-        <Card title={d.detail.memory} tick={METRIC_COLORS.mem} unit={d.units.mb}>
+        <Card title={anonymousMemory ? sessionMemoryLabels.anonymous : d.detail.memory} tick={METRIC_COLORS.mem} unit={memoryUnit}>
           <KVList
             rows={[
-              { label: d.detail.peak, text: fmt(analysis.peak_app_memory_mb, 0) },
-              { label: d.detail.average, text: fmt(m.app_memory_mb?.average ?? null, 0) },
-              ...(analysis.memory_ratio_percent != null
-                ? [{ label: d.detail.ratioOfRam, text: `${fmt(analysis.memory_ratio_percent, 1)} ${d.units.percent}` }]
+              { label: d.detail.peak, text: fmt(peakMemory, 0) },
+              { label: d.detail.average, text: fmt(memoryStats?.average ?? null, 0) },
+              ...(memoryRatio != null
+                ? [{ label: d.detail.ratioOfRam, text: `${fmt(memoryRatio, 1)} ${d.units.percent}` }]
                 : []),
             ]}
           />

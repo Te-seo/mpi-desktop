@@ -213,10 +213,13 @@ def _create_guard(serial: str = "USB", **overrides):
 
 
 def test_guard_carries_validated_auto_stop_to_promoted_capture(guard_env):
-    created = _create_guard(auto_stop_after_sec=300)
+    created = api._handle_create_temperature_guard({
+        "serial": "USB", "package": "com.example.game", "auto_stop_after_sec": 300,
+    })
     with api._captures_lock:
         context = api._active_temperature_guards[created["guard_id"]]
     assert created["auto_stop_after_sec"] == 300.0
+    assert context.config.duration_sec == 0.5
     assert context.config.auto_stop_after_sec == 300.0
 
     for invalid in (True, 0, float("nan"), 3601):

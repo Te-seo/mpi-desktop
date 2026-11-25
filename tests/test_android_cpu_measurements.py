@@ -19,6 +19,8 @@ class Readings:
     frames = ""
 
     def _safe_shell(self, _serial, command):
+        if "_MPI_PROC_BOUNDARY_" in command:
+            return "\n_MPI_PROC_BOUNDARY_\n".join((self.system, "", self.process))
         if command == "cat /proc/123/stat":
             return self.process
         if command.startswith("cat /proc/stat"):
@@ -32,7 +34,7 @@ class Readings:
     def _reset_gfxinfo(self, *_args):
         pass
 
-    def _resolve_pid(self, *_args):
+    def _resolve_pid(self, *_args, **_kwargs):
         return 123
 
 
@@ -51,7 +53,8 @@ def capture(monkeypatch):
         clock[0] += 1_000_000_000
         return session.sample(0)
 
-    return readings, sample
+    yield readings, sample
+    session.close()
 
 
 def test_guest_counters_are_not_counted_twice_and_malformed_values_are_missing():

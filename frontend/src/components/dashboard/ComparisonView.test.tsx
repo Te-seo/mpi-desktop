@@ -5,6 +5,7 @@ import { renderWithLocale } from '../../test/utils'
 import { makeAnalysis, makeStats } from '../../test/fixtures'
 import { ComparisonView } from './ComparisonView'
 import type { SessionAnalysis } from '../../lib/types'
+import { MEMORY_SOURCE } from '../../lib/chartMemory'
 
 function renderCmp(analyses: SessionAnalysis[], selectedPaths?: string[]) {
   try {
@@ -34,6 +35,23 @@ function pair() {
 }
 
 describe('ComparisonView', () => {
+  it('compares only peaks measured by the same memory source', () => {
+    const typed = makeAnalysis({ file_path: '/A', memory_source: MEMORY_SOURCE, metrics: { anon_rss_plus_swap_mib: makeStats({ max: 100 }) } })
+    const other = { ...typed, file_path: '/B', metrics: { anon_rss_plus_swap_mib: makeStats({ max: 150 }) } }
+    const legacy = makeAnalysis({ file_path: '/C', peak_app_memory_mb: 500 })
+    const ios = makeAnalysis({ file_path: '/D', platform: 'ios', peak_app_memory_mb: 700 })
+    renderWithLocale(<ComparisonView analyses={[typed, other, legacy, ios]} />)
+    const typedRow = within(screen.getByRole('row', { name: /Peak Anonymous RSS \+ Swap/ }))
+    expect(typedRow.getByText('MiB')).toBeInTheDocument()
+    expect(typedRow.getByText('+50 (+50%)')).toBeInTheDocument()
+    expect(typedRow.queryByText('500')).not.toBeInTheDocument()
+    for (const [label, value, unit] of [['Legacy PSS / RSS', '500', 'MB'], ['iOS app memory', '700', 'MiB']]) {
+      const row = within(screen.getByText(`Peak ${label}`).closest('tr')!)
+      expect(row.getByText(value)).toBeInTheDocument()
+      expect(row.getByText(unit)).toBeInTheDocument()
+      expect(row.queryByText(/\+/)).not.toBeInTheDocument()
+    }
+  })
   it('renders a column per session with A as the default baseline', () => {
     renderWithLocale(<ComparisonView analyses={pair()} />)
     expect(screen.getByText('App A')).toBeInTheDocument()

@@ -1,11 +1,14 @@
 from dataclasses import replace
 from pathlib import Path
+from subprocess import CompletedProcess
 
 import pytest
 
 from mpi import api
 from mpi.analysis import analyze_session
-from mpi.android.chart_memory import SOURCE, form_factor, package_category, parse_replay_memory, read_capture_proc
+from mpi.android import adb
+from mpi.android.backend import AndroidBackend
+from mpi.android.chart_memory import SOURCE, form_factor, package_category, parse_replay_memory, proc_command, read_capture_proc
 from mpi.report import build_endpoint_payload, generate_csv_report
 from mpi.schema import DeviceInfo, MemStats, MetricsSnapshot, PackageInfo, Platform
 
@@ -24,6 +27,25 @@ def test_capture_checks_exact_package_pid_lifetime_and_preserves_real_zero():
     assert read_capture_proc(proc_payload(package="com.example.qab"), 99, "com.example.qa") == (None, None, None, None)
     assert read_capture_proc(proc_payload(after="11"), 99, "com.example.qa") == (None, None, None, None)
     assert read_capture_proc(proc_payload(tail_package="com.example.qa:remote"), 99, "com.example.qa") == (None, None, None, None)
+
+
+@pytest.mark.parametrize("newline", ["\r\n", "\n"])
+def test_adb_text_preserves_chart_memory_and_context_across_line_endings(monkeypatch, newline):
+    package = "com.example.qa"
+    proc = proc_payload(package=package)
+    context = (f"Packages:\n  Package [{package}] (abc):\n    category=0\n"
+               "\n_MPI_MEM_CONTEXT_\nfeature:android.hardware.telephony\n")
+
+    def fake_run(args, **kwargs):
+        output = context if "dumpsys package" in args[-1] else proc
+        return CompletedProcess(args, 0, output.replace("\n", newline).encode(), b"")
+
+    monkeypatch.setattr(adb.subprocess, "run", fake_run)
+    raw = adb.shell(proc_command(99), serial="fixture")
+    assert read_capture_proc(raw, 99, package) == (2048, 0, "foreground", 10)
+    assert AndroidBackend()._capture_memory_context("fixture", package, "unknown") == (
+        ("game", "android_package_category_hint"), "phone_tablet",
+    )
 
 
 def test_unreadable_swap_is_missing_and_state_requires_stable_scores():
@@ -71,12 +93,17 @@ def test_capture_csv_replay_retains_provenance_and_missing_rows(tmp_path: Path):
     assert [row[cols.index("mem_memory_source")] for row in rows] == [None, SOURCE, SOURCE]
 
 
-def test_capture_proc_worker_does_not_queue_or_reuse_late_result(monkeypatch):
-    from threading import Event
+def test_capture_proc_worker_does_not_queue_or_reuse_late_result():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Lock
     from mpi.android.backend import StreamingCaptureSession
 
     session = StreamingCaptureSession.__new__(StreamingCaptureSession)
-    session._memory_probe = None
+    pool = ThreadPoolExecutor(max_workers=1)
+    session._pool = pool
+    session._pending = {}
+    session._pool_lock = Lock()
+    session._closed = Event()
     release = Event()
     started = Event()
     calls = []
@@ -87,16 +114,16 @@ def test_capture_proc_worker_does_not_queue_or_reuse_late_result(monkeypatch):
         release.wait(2)
         return pid, 0, None, 1
 
-    monkeypatch.setattr(session, "_read_chart_proc", read)
-    first = session._start_chart_proc(7)
+    first = session._submit_probe("memory", None, read, 7)
     assert first is not None and started.wait(1)
-    assert session._start_chart_proc(8) is None
+    assert session._submit_probe("memory", None, read, 8) is None
     assert not first.done() and calls == [7]
     release.set()
-    assert first.result(timeout=1) == (7, 0, None, 1)
-    latest = session._start_chart_proc(8)
+    assert first.result(timeout=1)[0] == (7, 0, None, 1)
+    latest = session._submit_probe("memory", None, read, 8)
     assert latest is not None and latest is not first
-    assert latest.result(timeout=1) == (8, 0, None, 1)
+    assert latest.result(timeout=1)[0] == (8, 0, None, 1)
+    pool.shutdown()
 
 
 @pytest.mark.parametrize("bad", [

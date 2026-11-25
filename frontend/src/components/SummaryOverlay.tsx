@@ -1,4 +1,4 @@
-import { isAndroidAnonymousMemory, memoryChartLabel } from '../lib/chartMemory'
+import type { liveMemorySeries } from '../lib/chartMemory'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { CircleHelp } from 'lucide-react'
@@ -15,10 +15,11 @@ interface Props {
   data: Record<string, number | null>[]
   /** Original snapshots, 1:1 with `data`, used to export the selected range. */
   snapshots: MetricsSnapshot[]
+  memorySeries: ReturnType<typeof liveMemorySeries>
 }
 
 /** Metrics summarized over a dragged range, keyed by their RowDatum series. */
-function aggregateRows(charts: ChartsMessages, temperatureZone: TemperatureZone, anonymous: boolean) {
+function aggregateRows(charts: ChartsMessages, temperatureZone: TemperatureZone, memorySeries: Props['memorySeries']) {
   return [
     { key: 'fps', label: 'FPS', unit: '', digits: 0 },
     { key: 'cpu_total', label: charts.systemCpu, unit: '%', digits: 0 },
@@ -26,7 +27,7 @@ function aggregateRows(charts: ChartsMessages, temperatureZone: TemperatureZone,
     { key: 'cpu_norm', label: charts.appCpuNormalized, unit: '%', digits: 0 },
     { key: 'gpu_busy', label: 'GPU', unit: '%', digits: 0 },
     { key: `thermal:${temperatureZone}`, label: temperatureZone === 'skin' ? 'Skin' : charts.batteryTemperature, unit: '°C', digits: 1 },
-    anonymous ? { key: 'mem_anon_mib', label: memoryChartLabel, unit: 'MiB', digits: 1 } : { key: 'mem_ratio', label: 'Mem', unit: '%', digits: 1 },
+    { ...memorySeries, digits: 1 },
     { key: 'power_mw', label: 'Power', unit: 'mW', digits: 0 },
     { key: 'battery', label: 'Batt', unit: '%', digits: 0 },
   ]
@@ -41,11 +42,10 @@ interface Agg {
   max: number | null
 }
 
-export function SummaryOverlay({ data, snapshots }: Props) {
+export function SummaryOverlay({ data, snapshots, memorySeries }: Props) {
   const t = useMessages()
   const temperatureZone = temperatureZoneForSnapshots(snapshots)
-  const anonymous = isAndroidAnonymousMemory(snapshots.at(-1))
-  const rows = useMemo(() => aggregateRows(t.charts, temperatureZone, anonymous), [t.charts, temperatureZone, anonymous])
+  const rows = useMemo(() => aggregateRows(t.charts, temperatureZone, memorySeries), [t.charts, temperatureZone, memorySeries])
   const { selection, menu, closeMenu } = useCrosshair()
   const [saving, setSaving] = useState(false)
 

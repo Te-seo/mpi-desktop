@@ -74,11 +74,18 @@ def read_capture_proc(raw, pid, package):
 def proc_command(pid):
     assert type(pid) is int and pid > 0
     base = f"/proc/{pid}"
-    process = f"tr '\\000' '\\n' < {base}/cmdline | head -n 1"
-    return "; printf '\\n_MPI_MEM_BOUNDARY_\\n'; ".join((
-        f"cat {base}/stat", process, f"cat {base}/oom_score_adj",
-        f"cat {base}/status", f"cat {base}/oom_score_adj", process,
-        f"cat {base}/stat", "true",
+    # Read argv[0] up to NUL and the scalar fields with Android shell builtins.
+    # Forking tr, head and printf repeatedly can exhaust a live sample's window.
+    return "; ".join((
+        f"IFS= read -r stat_before < {base}/stat",
+        f"IFS= read -r -d '' name_before < {base}/cmdline",
+        f"IFS= read -r oom_before < {base}/oom_score_adj",
+        f"status=$(cat {base}/status)",
+        f"IFS= read -r oom_after < {base}/oom_score_adj",
+        f"IFS= read -r -d '' name_after < {base}/cmdline",
+        f"IFS= read -r stat_after < {base}/stat",
+        "printf '%s\\n_MPI_MEM_BOUNDARY_\\n' "
+        '"$stat_before" "$name_before" "$oom_before" "$status" "$oom_after" "$name_after" "$stat_after"',
     ))
 
 

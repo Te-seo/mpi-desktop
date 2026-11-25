@@ -8,7 +8,7 @@ from mpi import api
 from mpi.analysis import analyze_session
 from mpi.android import adb
 from mpi.android.backend import AndroidBackend
-from mpi.android.chart_memory import SOURCE, form_factor, package_category, parse_replay_memory, proc_command, read_capture_proc
+from mpi.android.chart_memory import SOURCE, form_factor, package_category, parse_replay_memory, proc_command, process_stat_and_status, read_capture_proc
 from mpi.report import build_endpoint_payload, generate_csv_report
 from mpi.schema import DeviceInfo, MemStats, MetricsSnapshot, PackageInfo, Platform
 
@@ -52,6 +52,14 @@ def test_unreadable_swap_is_missing_and_state_requires_stable_scores():
     assert read_capture_proc(proc_payload(swap="", oom_after="15"), 99, "com.example.qa") == (2048, None, None, 10)
 
 
+def test_shared_proc_fields_reject_conflicting_identity_and_allow_unreadable_cmdline():
+    assert process_stat_and_status(proc_payload(after="11"), 99) == ("", "")
+    assert process_stat_and_status(proc_payload(tail_package="com.example.other"), 99) == ("", "")
+    assert process_stat_and_status(proc_payload(), 98) == ("", "")
+    status, stat = process_stat_and_status(proc_payload(package=""), 99)
+    assert "RssAnon:" in status and stat.startswith("99 (")
+
+
 def test_category_hint_requires_exact_dump_record_and_explicit_metadata():
     dump = "Packages:\n  Package [com.example.other] (aaa):\n    pkgFlags=[ IS_GAME ]\n  Package [com.example.qa] (bbb):\n"
     assert package_category(dump, "com.example.qa") == (None, None)
@@ -93,7 +101,7 @@ def test_capture_csv_replay_retains_provenance_and_missing_rows(tmp_path: Path):
     assert [row[cols.index("mem_memory_source")] for row in rows] == [None, SOURCE, SOURCE]
 
 
-def test_capture_proc_worker_does_not_queue_or_reuse_late_result():
+def test_capture_proc_worker_keeps_one_request_until_consumed():
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event, Lock
     from mpi.android.backend import StreamingCaptureSession
@@ -102,6 +110,7 @@ def test_capture_proc_worker_does_not_queue_or_reuse_late_result():
     pool = ThreadPoolExecutor(max_workers=1)
     session._pool = pool
     session._pending = {}
+    session._observation_generation = 0
     session._pool_lock = Lock()
     session._closed = Event()
     release = Event()
@@ -116,10 +125,12 @@ def test_capture_proc_worker_does_not_queue_or_reuse_late_result():
 
     first = session._submit_probe("memory", None, read, 7)
     assert first is not None and started.wait(1)
-    assert session._submit_probe("memory", None, read, 8) is None
+    assert session._submit_probe("memory", None, read, 8) is first
     assert not first.done() and calls == [7]
     release.set()
     assert first.result(timeout=1)[0] == (7, 0, None, 1)
+    assert session._submit_probe("memory", None, read, 8) is first
+    assert session._pending.pop("memory") is first
     latest = session._submit_probe("memory", None, read, 8)
     assert latest is not None and latest is not first
     assert latest.result(timeout=1)[0] == (8, 0, None, 1)

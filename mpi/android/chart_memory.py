@@ -53,6 +53,25 @@ def parse_replay_memory(row, platform):
     return result
 
 
+def process_stat_and_status(raw, pid):
+    """Share the captured files unless the read crossed a process change."""
+    parts = raw.split("\n_MPI_MEM_BOUNDARY_\n")
+    if len(parts) != 8:
+        return "", ""
+    stat_before, name_before, _, status, _, name_after, stat_after, _ = parts
+    for stat in (stat_before, stat_after):
+        parsed = re.match(r"^(\d+) \(", stat)
+        if parsed and parsed[1] != str(pid):
+            return "", ""
+    before = parse_start_ticks(stat_before, pid)
+    after = parse_start_ticks(stat_after, pid)
+    if before is not None and after is not None and before != after:
+        return "", ""
+    if name_before and name_after and name_before != name_after:
+        return "", ""
+    return status, stat_after
+
+
 def read_capture_proc(raw, pid, package):
     """Exact selected process only; no memory from a reused PID."""
     parts = raw.split("\n_MPI_MEM_BOUNDARY_\n")

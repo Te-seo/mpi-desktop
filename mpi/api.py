@@ -1854,6 +1854,8 @@ def _capture_pump(
 ) -> None:
     """Worker thread: pull snapshots from session and emit them as events."""
     seq = 0
+    previous_generation = 0
+    reset_window = getattr(session, "reset_observation_window", None)
     try:
         while not stop.is_set():
             with _captures_lock:
@@ -1862,12 +1864,17 @@ def _capture_pump(
                 was_paused = context is not None and context.pause_started_at is not None
             attempt_started = time.monotonic()
             try:
+                if generation != previous_generation and reset_window is not None:
+                    reset_window()
+                previous_generation = generation
                 snap = session.sample(duration_sec)  # type: ignore[attr-defined]
             except (AppExitedError, AppBackgroundedError) as exc:
                 with _captures_lock:
                     current = _active_captures.get(capture_id)
-                    paused = current is not None and current.pause_started_at is not None
-                if paused:
+                    crossed_pause = current is not None and (
+                        current.pause_started_at is not None or current.pause_generation != generation
+                    )
+                if was_paused or crossed_pause:
                     stop.wait(timeout=duration_sec)
                     continue
                 # The measured app died — surface the notice and END the capture
@@ -1901,14 +1908,18 @@ def _capture_pump(
                     # generic I/O error; it is not a second capture failure.
                     break
                 logger.exception("capture %s sample failed", capture_id)
-                _emit(
-                    {
-                        "event": "capture_error",
-                        "capture_id": capture_id,
-                        "seq": seq,
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-                )
+                with _captures_lock:
+                    current = _active_captures.get(capture_id)
+                    if not was_paused and (current is None or current.pause_generation == generation):
+                        _emit(
+                            {
+                                "event": "capture_error",
+                                "capture_id": capture_id,
+                                "seq": seq,
+                                "recoverable": True,
+                                "error": f"{type(exc).__name__}: {exc}",
+                            }
+                        )
                 # A timed-out read can already have used the entire interval.
                 # Throttle fast failures without skipping the next viable tick.
                 stop.wait(timeout=max(0.0, duration_sec - (time.monotonic() - attempt_started)))

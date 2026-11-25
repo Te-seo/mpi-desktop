@@ -18,6 +18,11 @@ _GFX_FRAME_DEADLINE = re.compile(r"Number Frame deadline missed:\s*(\d+)")
 _GFX_PROFILEDATA = re.compile(
     r"---PROFILEDATA---\s*(.*?)\s*---PROFILEDATA---", re.DOTALL
 )
+_GFX_WINDOW = re.compile(r"^[ \t]*Window:[ \t]*([^\r\n]+)", re.MULTILINE)
+_GFX_VIEW_ROOT = re.compile(
+    r"^[ \t]*([^ \t\r\n][^\r\n]*?/android\.view\.ViewRootImpl@[0-9a-fA-F]+)",
+    re.MULTILINE,
+)
 
 
 def parse_gfxinfo(text: str) -> FrameStats:
@@ -71,9 +76,12 @@ def _parse_frame_events(text: str, limit: int = 4096) -> Tuple[List[Dict[str, An
     dropped = 0
     previous_end = 0
     for block_index, match in enumerate(_GFX_PROFILEDATA.finditer(text)):
-        prefix = [line.strip() for line in text[previous_end:match.start()].splitlines()
-                  if line.strip() and not line.startswith("Stats since:")]
-        stream = prefix[-1] if prefix else f"window-{block_index}"
+        # Android can put per-dump GPU histograms between the window title and
+        # PROFILEDATA. Only a window identifier can link frames across dumps.
+        window = _GFX_WINDOW.search(text, previous_end, match.start())
+        if window is None:
+            window = _GFX_VIEW_ROOT.search(text, previous_end, match.start())
+        stream = window.group(1).strip() if window else f"window-{block_index}"
         previous_end = match.end()
         lines = [line.strip() for line in match.group(1).splitlines() if line.strip()]
         if not lines:

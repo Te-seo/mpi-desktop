@@ -208,6 +208,48 @@ describe('LiveCaptureProvider automatic stop', () => {
     act(() => dispatch({ event: 'capture_state', capture_id: 'old-capture', paused: true, elapsed_sec: 10 }))
     expect(capture.isPaused).toBe(false)
   })
+
+  it('keeps collecting through a missed sample and clears only its retry notice on recovery', async () => {
+    renderProvider()
+    await selectTarget()
+    await act(async () => capture.start())
+    const retry = { event: 'capture_error', capture_id: 'capture-1', recoverable: true, error: 'read timed out' }
+    act(() => dispatch(retry))
+    expect(capture.phase).toBe('running')
+    expect(capture.error).toBeNull()
+    expect(capture.sampleRetrying).toBe(true)
+    expect(capture.snapshots).toHaveLength(0)
+
+    ipc.call.mockRejectedValueOnce(Error('pause rejected'))
+    await act(async () => capture.togglePause())
+    act(() => dispatch({ event: 'snapshot', capture_id: 'capture-1', data: snapshot }))
+    expect(capture.sampleRetrying).toBe(false)
+    expect(capture.snapshots).toEqual([snapshot])
+    expect(capture.error).toBe('pause rejected')
+
+    act(() => dispatch(retry))
+    act(() => dispatch({ event: 'capture_state', capture_id: 'capture-1', paused: true }))
+    act(() => dispatch(retry))
+    expect(capture.sampleRetrying).toBe(false)
+    expect(capture.phase).toBe('paused')
+  })
+
+  it('retains the final error and saved samples when the target exits during a retry', async () => {
+    renderProvider()
+    await selectTarget()
+    await act(async () => capture.start())
+    act(() => {
+      dispatch({ event: 'snapshot', capture_id: 'capture-1', data: snapshot })
+      dispatch({ event: 'capture_error', capture_id: 'capture-1', recoverable: true, error: 'read timed out' })
+      dispatch({ event: 'capture_error', capture_id: 'capture-1', error: 'target exited' })
+      dispatch({ event: 'capture_ended', capture_id: 'capture-1' })
+    })
+    expect(capture.phase).toBe('error')
+    expect(capture.error).toContain('target exited')
+    expect(capture.sampleRetrying).toBe(false)
+    expect(ipc.call).toHaveBeenCalledWith('auto_save_raw_csv', expect.objectContaining({ snapshots: [snapshot] }))
+  })
+
   afterEach(() => { vi.useRealTimers() })
 
   beforeEach(() => {

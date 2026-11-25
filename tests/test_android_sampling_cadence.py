@@ -31,7 +31,7 @@ def test_stalled_probe_does_not_delay_ticks_or_replay_its_value():
             calls.append(command)
             if len(calls) == 1:
                 release.wait(4)
-                return "level: 9"  # too late for its sample
+                return "level: 9"
             return "level: 42"
         return shell(serial, command)
 
@@ -49,6 +49,9 @@ def test_stalled_probe_does_not_delay_ticks_or_replay_its_value():
         assert len(calls) == 1
         release.set()
         session._pending["battery"].result(timeout=1)
+        recovered = session.sample(0.5)
+        assert recovered.battery.level_percent == 9
+        assert recovered.metric_status["battery_level"]["status"] == "held"
         assert session.sample(0.5).battery.level_percent == 42
     finally:
         release.set()
@@ -82,7 +85,7 @@ def test_long_frame_dump_has_the_entire_tick_and_resets_in_one_round_trip():
         session.close()
 
 
-def test_missed_frame_reset_requires_a_fresh_baseline():
+def test_late_frame_dump_is_consumed_once_with_its_actual_reset_interval():
     readings = Readings()
     shell = readings._safe_shell
     release = threading.Event()
@@ -103,12 +106,123 @@ def test_missed_frame_reset_requires_a_fresh_baseline():
         assert missed.frames.fps_estimate is None
         release.set()
         session._pending["gfxinfo"].result(timeout=1)
-        reseed = session.sample(0.1)
-        assert reseed.frames.fps_estimate is None
-        assert reseed.frames.total_frames == 0
+        recovered = session.sample(0.1)
+        assert recovered.frames.total_frames == 1
+        window = recovered.metric_status["fps"]["window_sec"]
+        assert recovered.frames.fps_estimate == pytest.approx(1 / window, rel=0.005)
+        assert session.sample(0.1).frames.total_frames == 2
         assert session.sample(0.1).frames.total_frames == 3
     finally:
         release.set()
+        session.close()
+
+
+def test_variable_proc_delays_keep_counter_deltas_and_cannot_cross_pause():
+    readings = Readings()
+    shell = readings._safe_shell
+    release = threading.Event()
+    proc_calls = 0
+
+    def delayed(serial, command):
+        nonlocal proc_calls
+        if "_MPI_PROC_BOUNDARY_" in command:
+            proc_calls += 1
+            if proc_calls in (1, 3):
+                assert release.wait(3)
+        if command == "dumpsys battery":
+            return "level: 50"
+        return shell(serial, command)
+
+    readings._safe_shell = delayed
+    session = make_session(readings)
+    try:
+        for _ in range(3):
+            assert session.sample(0.06).cpu.cpu_percent is None
+        assert proc_calls == 1
+        release.set()
+        recovered = session.sample(0.06)
+        assert recovered.cpu.cpu_percent == 0
+        assert recovered.metric_status["cpu"]["window_sec"] > 0.06
+        assert session.sample(0.06).cpu.cpu_percent == 0
+        release.clear()
+        for _ in range(2):
+            assert session.sample(0.06).cpu.cpu_percent is None
+        session.reset_observation_window()
+        release.set()
+        assert session.sample(0.06).cpu.cpu_percent is None
+        assert proc_calls == 4
+        assert session.sample(0.06).cpu.cpu_percent == 0
+    finally:
+        release.set()
+        session.close()
+
+
+def test_delayed_memory_from_an_old_pid_cannot_be_attached_to_restarted_process():
+    readings = Readings()
+    readings.process = ""
+    readings._resolve_pid = lambda *_args, **_kwargs: 222
+    session = make_session(readings)
+    release = threading.Event()
+
+    def memory(pid):
+        if pid == 123:
+            assert release.wait(3)
+        return pid, 0, "foreground", 7
+
+    session._read_chart_proc = memory
+    try:
+        assert session.sample(0.08).memory.anon_rss_kib is None
+        assert session.pid == 222
+        release.set()
+        sample = session.sample(0.08)
+        assert sample.memory.play_memory_pid == sample.memory.anon_rss_kib == 222
+    finally:
+        release.set()
+        session.close()
+
+
+def test_failed_frame_reset_reseeds_before_using_the_next_count():
+    readings = Readings()
+    shell = readings._safe_shell
+    results = iter(("(adb error: timeout)", "Total frames rendered: 50", "Total frames rendered: 3"))
+    readings._safe_shell = lambda serial, command: (
+        next(results) if command.endswith(" framestats") else shell(serial, command)
+    )
+    session = make_session(readings)
+    try:
+        assert session.sample(0.05).frames.fps_estimate is None
+        assert session.sample(0.05).frames.fps_estimate is None
+        assert session.sample(0.05).frames.total_frames == 3
+    finally:
+        session.close()
+
+
+def test_persistent_fast_bundle_shares_verified_process_read_with_cpu_and_rss():
+    readings = Readings()
+    session = make_session(readings)
+    package = session.package.bundle_id
+    status = "RssAnon:\t2048 kB\nVmSwap:\t0 kB\nVmRSS:\t4200 kB"
+    memory = "\n_MPI_MEM_BOUNDARY_\n".join((
+        readings.process, package, "0", status, "0", package, readings.process, "",
+    ))
+
+    class Stream:
+        def read(self, command):
+            assert command.count("cat /proc/123/status") == 1
+            assert "cat /proc/123/stat " not in command
+            return "\n_MPI_FAST_SECTION_\n".join((memory, readings.system, "69 %\n422\n10\n10\n"))
+
+        def close(self):
+            pass
+
+    session.proc_stream = Stream()
+    try:
+        sample = session.sample(0.05)
+        assert sample.memory.anon_rss_plus_swap_kib == 2048
+        assert sample.memory.rss_total_kb == 4200
+        assert sample.cpu.cpu_percent == 0
+        assert sample.gpu.busy_percent == 69
+    finally:
         session.close()
 
 

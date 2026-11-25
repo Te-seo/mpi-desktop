@@ -32,6 +32,7 @@ from ..schema import (
     ThermalStats,
 )
 from . import adb, axml, parsers
+from .proc_stream import ProcStream
 
 
 _VERSION_NAME = re.compile(r"versionName=(\S+)")
@@ -212,9 +213,12 @@ def _positional_sysfs_read_command(files: List[str]) -> str:
     paths = " ".join(shlex.quote(path) for path in files)
     return (
         f"for f in {paths}; do v=; "
-        'if IFS= read -r v < "$f" 2>/dev/null || [ -n "$v" ]; then '
-        "printf '%s\\n' \"$v\"; "
-        f"else printf '{_MISSING_SYSFS_VALUE}\\n'; fi; done"
+        'if IFS= read -r v 2>/dev/null < "$f" || [ -n "$v" ]; then '
+        # The expected cells are numeric (optionally with units). Prevent a
+        # malformed flag or escape from changing echo's line boundaries.
+        f"""case "$v" in -[neE]*|*'\\'*) v={_MISSING_SYSFS_VALUE};; esac; """
+        'echo "$v"; '
+        f"else echo {_MISSING_SYSFS_VALUE}; fi; done"
     )
 
 
@@ -1293,6 +1297,7 @@ class AndroidBackend(DeviceBackend):
             fps_ceiling_hz=fps_ceiling_hz,
             memory_category=memory_category,
             memory_form_factor=memory_form_factor,
+            proc_stream=ProcStream(serial),
         )
 
     def _capture_memory_context(self, serial: str, package: str, form_factor: Optional[str]):
@@ -1861,6 +1866,7 @@ class StreamingCaptureSession:
         fps_ceiling_hz: Optional[float] = None,
         memory_category: Tuple[Optional[str], Optional[str]] = (None, None),
         memory_form_factor: Optional[str] = None,
+        proc_stream=None,
     ):
         self._backend = backend
         self._serial = serial
@@ -1868,13 +1874,16 @@ class StreamingCaptureSession:
         self.package = package
         self._memory_category = memory_category
         self._memory_form_factor = memory_form_factor or device.android_memory_form_factor
+        self.proc_stream = proc_stream
         self._pool = ThreadPoolExecutor(max_workers=9, thread_name_prefix="capture-adb")
         self._pending: Dict[str, Future] = {}
+        self._observation_generation = 0
         self._closed = threading.Event()
         self._close_future = Future()
         self._pool_lock = threading.Lock()
         self._reset_locks = {"gfxinfo": threading.Lock(), "sf": threading.Lock()}
         self._last_deadline: Optional[float] = None
+        self._gpu_retry_at = 0.0
         self._frame_baseline: Dict[str, Optional[float]] = {}
         self.pid = pid
         self._hz = max(0, hz)
@@ -1943,9 +1952,19 @@ class StreamingCaptureSession:
         }
         for source, seed in seeds.items():
             if seed is not None:
-                (_, midpoint), _, _ = seed.result()
+                (_, midpoint), _, _, _ = seed.result()
                 self._frame_baseline[source] = midpoint
+                del self._pending[source]
 
+    def reset_observation_window(self) -> None:
+        """Exclude outstanding reads and delta intervals across pause or reattach."""
+        self._observation_generation += 1
+        self._frame_baseline.clear()
+        self._last_jiffies = self._last_wall_ns = self._last_starttime = None
+        self._last_sys_ticks = None
+        self._last_core_ticks = {}
+        self._last_net_rx_bytes = self._last_net_tx_bytes = self._last_net_wall_ns = None
+        self._background_streak = self._gone_streak = 0
 
     def _build_sysfs_script(self) -> str:
         """One-shot shell read of every sysfs file in a fixed order.
@@ -2033,10 +2052,7 @@ class StreamingCaptureSession:
         if new_pid and new_pid != self.pid:
             # App restarted under a new pid — follow it instead of ending.
             self.pid = new_pid
-            self._gone_streak = 0
-            self._last_jiffies = None
-            self._last_wall_ns = None
-            self._last_starttime = None
+            self.reset_observation_window()
             _log.warning(
                 "measured app %s restarted; re-attached to pid %d",
                 self.package.bundle_id,
@@ -2084,7 +2100,7 @@ class StreamingCaptureSession:
 
     def _read_chart_proc(self, pid: int):
         try:
-            raw = adb.shell(chart_memory.proc_command(pid), serial=self._serial, timeout=1.5)
+            raw = adb.shell(chart_memory.proc_command(pid), serial=self._serial)
         except adb.AdbError:
             return None, None, None, None
         return chart_memory.read_capture_proc(raw, pid, self.package.bundle_id)
@@ -2095,6 +2111,8 @@ class StreamingCaptureSession:
                 self._closed.set()
                 self._close_future.set_result(None)
                 self._pool.shutdown(wait=False, cancel_futures=True)
+        if self.proc_stream is not None:
+            self.proc_stream.close()
         # A reset already issued by this session must finish before a new
         # capture attaches. Read-only commands can wind down independently.
         for lock in self._reset_locks.values():
@@ -2102,13 +2120,15 @@ class StreamingCaptureSession:
                 pass
 
     def _submit_probe(self, name, deadline, operation, *args, **kwargs) -> Optional[Future]:
+        generation = self._observation_generation
+
         def run():
             token = adb.shell_deadline.set(deadline)
             try:
                 begin_ns = time.monotonic_ns()
                 value = operation(*args, **kwargs)
                 observed_ns = (begin_ns + time.monotonic_ns()) // 2
-                return value, time.monotonic(), observed_ns
+                return value, time.monotonic(), observed_ns, generation
             finally:
                 adb.shell_deadline.reset(token)
 
@@ -2116,8 +2136,8 @@ class StreamingCaptureSession:
             if self._closed.is_set():
                 return None
             previous = self._pending.get(name)
-            if previous is not None and not previous.done():
-                return None
+            if previous is not None:
+                return previous
             future = self._pool.submit(run)
             self._pending[name] = future
             return future
@@ -2154,31 +2174,63 @@ class StreamingCaptureSession:
             if deadline <= now:
                 deadline = now + duration_sec
             self._last_deadline = deadline
-        started = deadline - duration_sec if deadline is not None else now
-        active = {}
+        # A row has a delivery deadline. Device commands have independent,
+        # bounded lifetimes: a 650ms dumpsys still produces a real reading
+        # for the next 500ms row. Keep a single in-flight request per service.
+        probe_deadline = now + max(12.0, duration_sec)
+        active = {future: name for name, future in self._pending.items()}
         readings = {}
-        proc_time_ns = None
+        observation_ns = {}
+        requests = {}
 
         def submit(name, operation, *args, **kwargs):
-            future = self._submit_probe(name, deadline, operation, *args, **kwargs)
+            if name in readings:
+                return
+            requests[name] = (operation, args, kwargs)
+            future = self._submit_probe(name, probe_deadline, operation, *args, **kwargs)
             if future is not None:
                 active[future] = name
 
         def shell(name, command):
             submit(name, self._backend._safe_shell, self._serial, command)
 
-        proc_command = "cat /proc/stat /proc/meminfo /proc/net/dev 2>/dev/null"
-        if sample_pid:
-            separator = "; printf '\\n_MPI_PROC_BOUNDARY_\\n'; "
-            proc_command = separator.join((
-                proc_command, f"cat /proc/{sample_pid}/status 2>/dev/null",
-                f"cat /proc/{sample_pid}/stat 2>/dev/null",
+        def parse_sysfs(value):
+            fields = parsers.parse_sysfs_bundle(
+                value, [label for label, _ in self._thermal_map], self._core_count
+            )
+            readings["sysfs_fields"] = fields
+            needs_fallback = fields["gpu_busy_percent"] is None or fields["gpu_clock_mhz"] is None
+            if needs_fallback and time.monotonic() >= self._gpu_retry_at:
+                shell("gpu", _GPU_FALLBACK_COMMAND)
+
+        system_command = "cat /proc/stat /proc/meminfo /proc/net/dev 2>/dev/null"
+        if self.proc_stream is not None:
+            # /proc/stat's per-interrupt counters can be much larger than all
+            # CPU lines combined. Only the leading cpu* lines are consumed.
+            system_command = (
+                "sed -n '/^cpu/!q;p' /proc/stat 2>/dev/null; "
+                "cat /proc/meminfo /proc/net/dev 2>/dev/null"
+            )
+        proc_command = system_command
+        if self.proc_stream is None:
+            if sample_pid:
+                separator = "; echo; echo _MPI_PROC_BOUNDARY_; "
+                proc_command = separator.join((
+                    system_command, f"cat /proc/{sample_pid}/status 2>/dev/null",
+                    f"cat /proc/{sample_pid}/stat 2>/dev/null",
+                ))
+                submit("memory", self._read_chart_proc, sample_pid)
+            shell("proc", proc_command + "; true")
+            shell("sysfs", self._sysfs_script)
+        else:
+            separator = "; echo; echo _MPI_FAST_SECTION_; "
+            command = separator.join((
+                chart_memory.proc_command(sample_pid) if sample_pid else "true",
+                proc_command, self._sysfs_script,
             ))
-            submit("memory", self._read_chart_proc, sample_pid)
-        shell("proc", proc_command + "; true")
+            submit("proc", self.proc_stream.read, command)
         for source in self._frame_sources:
             submit(source, self._frame_counter, source, True)
-        shell("sysfs", self._sysfs_script)
         shell("battery", "dumpsys battery")
         shell("focus", "dumpsys activity activities | grep -E ResumedActivity || true")
 
@@ -2190,31 +2242,59 @@ class StreamingCaptureSession:
             for future in done:
                 name = active.pop(future)
                 try:
-                    value, ended, observed = future.result()
+                    value, ended, observed, generation = future.result()
                 except adb.AdbError:
                     # A failed PID query says nothing about whether the app exited.
+                    del self._pending[name]
                     continue
+                except Exception:
+                    del self._pending[name]
+                    raise
                 if deadline is not None and ended > deadline:
+                    # Complete, but belongs to the next delivery window.
                     continue
+                del self._pending[name]
+                if generation != self._observation_generation:
+                    # The request started before a pause transition or PID change.
+                    if name in requests:
+                        operation, args, kwargs = requests[name]
+                        submit(name, operation, *args, **kwargs)
+                    continue
+                observation_ns[name] = observed
                 readings[name] = value
                 if name in ("gfxinfo", "sf"):
                     raw, midpoint = value
                     baseline = self._frame_baseline.get(name)
                     self._frame_baseline[name] = midpoint
-                    # Never turn a missed/failed counter reset into accumulated
-                    # totals for a single tick. The current read reseeds it.
-                    if (
-                        midpoint is not None and baseline is not None
-                        and (duration_sec == 0 or baseline >= started - duration_sec)
-                    ):
+                    # Both counter resets completed. Use their true interval
+                    # even if one command took longer than a delivery period.
+                    if midpoint is not None and baseline is not None:
                         readings[name] = raw, midpoint - baseline
                     else:
                         readings[name] = "", 0.0
                 elif name == "proc":
-                    sections = value.split("\n_MPI_PROC_BOUNDARY_\n")
+                    if self.proc_stream is not None:
+                        fast_sections = value.split("\n_MPI_FAST_SECTION_\n")
+                        if len(fast_sections) != 3:
+                            continue
+                        memory_raw, value, sysfs_raw = fast_sections
+                        sections = [value]
+                        if sample_pid:
+                            readings["memory"] = chart_memory.read_capture_proc(
+                                memory_raw, sample_pid, self.package.bundle_id
+                            )
+                            observation_ns["memory"] = observed
+                            # The verified memory read already captured status
+                            # and stat. Share its exact strings without extra
+                            # device reads or a second copy over the wire.
+                            sections.extend(chart_memory.process_stat_and_status(memory_raw, sample_pid))
+                        readings["sysfs"] = sysfs_raw
+                        observation_ns["sysfs"] = observed
+                        parse_sysfs(sysfs_raw)
+                    else:
+                        sections = value.split("\n_MPI_PROC_BOUNDARY_\n")
                     if len(sections) != (3 if sample_pid else 1):
                         continue
-                    proc_time_ns = observed
                     system = readings["sysinfo"] = sections[0]
                     if sample_pid:
                         readings["status"], readings["stat"] = sections[1:]
@@ -2229,25 +2309,25 @@ class StreamingCaptureSession:
                     if not readings["core_ticks"] and readings["sys_ticks"] is None:
                         shell("cpuinfo", "dumpsys cpuinfo")
                 elif name == "sysfs":
-                    fields = parsers.parse_sysfs_bundle(
-                        value, [label for label, _ in self._thermal_map], self._core_count
-                    )
-                    readings["sysfs_fields"] = fields
-                    if fields["gpu_busy_percent"] is None or fields["gpu_clock_mhz"] is None:
-                        shell("gpu", _GPU_FALLBACK_COMMAND)
-        for source in self._frame_sources:
-            if source not in readings:
-                self._frame_baseline[source] = None
+                    parse_sysfs(value)
         if deadline is not None:
             self._closed.wait(max(0.0, deadline - time.monotonic()))
         if self._closed.is_set():
             raise RuntimeError("capture session closed")
-        return readings, proc_time_ns
+        return readings, observation_ns
 
     def sample(self, duration_sec: float) -> MetricsSnapshot:
         bundle_id = self.package.bundle_id
         sample_pid = self.pid
-        readings, now_ns = self._read_window(duration_sec, sample_pid)
+        readings, observation_ns = self._read_window(duration_sec, sample_pid)
+        now_ns = observation_ns.get("proc")
+        if readings.get("jiffies") is not None:
+            self._gone_streak = 0
+        elif "pid" in readings:
+            self._check_app_alive(readings["pid"])
+            if self.pid != sample_pid:
+                for key in ("status", "stat", "memory", *self._frame_sources):
+                    readings.pop(key, None)
         gfxinfo, gfx_window = readings.get("gfxinfo", ("", 0.0))
         sf_timestats, sf_window = readings.get("sf", ("", 0.0))
         sysfs_raw = readings.get("sysfs", "")
@@ -2307,10 +2387,7 @@ class StreamingCaptureSession:
 
         cpu = CpuStats(pid=self.pid, cpu_percent=None)
         jiffies = readings.get("jiffies")
-        if "pid" in readings:
-            self._check_app_alive(readings["pid"])
-        elif jiffies is not None:
-            self._gone_streak = 0
+        cpu_window = None
         if jiffies is not None:
             starttime = parsers.parse_proc_stat_starttime(proc_stat)
             same_process = self._last_starttime is None or starttime == self._last_starttime
@@ -2318,12 +2395,14 @@ class StreamingCaptureSession:
                 dj = jiffies - self._last_jiffies
                 dns = now_ns - self._last_wall_ns
                 if dns > 0 and dj >= 0 and self._hz > 0:
-                    cpu.cpu_percent = (dj / self._hz) / (dns / 1e9) * 100.0
+                    cpu_window = dns / 1e9
+                    cpu.cpu_percent = (dj / self._hz) / cpu_window * 100.0
             self._last_jiffies = jiffies
             self._last_wall_ns = now_ns
             self._last_starttime = starttime
-        else:
-            # Do not smear a later delta across an interval with no evidence.
+        elif "stat" in readings:
+            # An actual unreadable stat breaks process identity continuity.
+            # An unfinished request leaves the last observed baseline intact.
             self._last_jiffies = None
             self._last_wall_ns = None
             self._last_starttime = None
@@ -2372,8 +2451,9 @@ class StreamingCaptureSession:
                 cpu.total_percent = fallback_total
                 cpu.total_source = "dumpsys_cpuinfo"
                 cpu.total_status = "measured"
-        self._last_sys_ticks = sys_ticks
-        self._last_core_ticks = core_ticks
+        if "sysinfo" in readings:
+            self._last_sys_ticks = sys_ticks
+            self._last_core_ticks = core_ticks
 
         # System-wide RAM: used = MemTotal - MemAvailable.
         sys_mem_total, sys_mem_avail = parsers.parse_proc_meminfo(sysinfo_raw)
@@ -2411,13 +2491,13 @@ class StreamingCaptureSession:
         # (can exceed 100% on multi-core), so divide by cores to a 0–100 basis,
         # then scale by how hard the cores are actually clocked right now:
         #   norm = min(100, app% / cores) * (Σ current freq / Σ max freq)
-        cpu.cpu_norm = _frequency_normalized_app_cpu(
-            cpu.cpu_percent,
-            self._core_count,
-            cpu.per_core_freq_mhz,
-            bool(sysfs_parsed["cpu_freqs_complete"]),
-            self._max_freq_total_mhz,
-        )
+        frequency_ns = observation_ns.get("sysfs")
+        if (now_ns is not None and frequency_ns is not None
+                and (duration_sec <= 0 or abs(frequency_ns - now_ns) <= duration_sec * 1e9)):
+            cpu.cpu_norm = _frequency_normalized_app_cpu(
+                cpu.cpu_percent, self._core_count, cpu.per_core_freq_mhz,
+                bool(sysfs_parsed["cpu_freqs_complete"]), self._max_freq_total_mhz,
+            )
 
         gpu = GpuStats(
             busy_percent=sysfs_parsed["gpu_busy_percent"],
@@ -2427,6 +2507,12 @@ class StreamingCaptureSession:
         if gpu.busy_percent is None or gpu.clock_mhz is None:
             gpu_fallback_raw = readings.get("gpu", "")
             gpu_fallback = parsers.parse_gpu_fallback(gpu_fallback_raw)
+            if "gpu" in readings and not gpu_fallback_raw.startswith("(adb error:") and all(
+                value is None for value in gpu_fallback.values()
+            ):
+                # GPU nodes are vendor-specific. Avoid a shell/glob scan every
+                # tick when none report counters, and retry after a GPU wake.
+                self._gpu_retry_at = time.monotonic() + 3.0
             if gpu.busy_percent is None:
                 gpu.busy_percent = gpu_fallback["busy_percent"]
             if gpu.clock_mhz is None:
@@ -2435,6 +2521,7 @@ class StreamingCaptureSession:
         thermal = ThermalStats(
             zones_c=self._aggregate_thermal(sysfs_parsed["thermal_c"])
         )
+        battery_temp_in_sysfs = "battery" in thermal.zones_c
         _add_dumpsys_battery_thermal_fallback(thermal.zones_c, battery_raw)
 
         battery = parsers.parse_battery(battery_raw)
@@ -2462,6 +2549,42 @@ class StreamingCaptureSession:
             "network": {"rx_bytes": network_rx, "tx_bytes": network_tx},
         }
 
+        # Rows can include newly received observations from an earlier window.
+        # Record their age and the actual interval used for a cumulative rate.
+        emitted_ns = time.monotonic_ns()
+        metric_status = {}
+
+        def record(key, probe, source, scope, value, window=None):
+            at = observation_ns.get(probe)
+            if at is None or value is None:
+                return
+            age = max(0, emitted_ns - at) / 1e9
+            status = {
+                "source": source, "scope": scope,
+                "status": "held" if duration_sec > 0 and age > duration_sec else "fresh",
+                "age_sec": round(age, 3),
+            }
+            if window is not None:
+                status["window_sec"] = round(window, 4)
+            metric_status[key] = status
+
+        sf_frames = frames.source == "android_surfaceflinger_timestats"
+        record("fps", "sf" if sf_frames else "gfxinfo", frames.source, frames.scope,
+               frames.fps_estimate, sf_window if sf_frames else gfx_window)
+        record("cpu", "proc", "proc_pid_stat", "selected_process", cpu.cpu_percent, cpu_window)
+        record("cpu_norm", "proc", "proc_pid_stat", "selected_process", cpu.cpu_norm, cpu_window)
+        record("cpu_total", "cpuinfo" if cpu.total_source == "dumpsys_cpuinfo" else "proc",
+               cpu.total_source, "system_device", cpu.total_percent)
+        record("mem_bytes", "memory", chart_memory.SOURCE, "selected_process", memory.anon_rss_plus_swap_kib)
+        record("gpu", "gpu" if sysfs_parsed["gpu_busy_percent"] is None else "sysfs",
+               "android_sysfs", "system_device", gpu.busy_percent)
+        record("temperature", "sysfs" if battery_temp_in_sysfs else "battery",
+               "android_sysfs" if battery_temp_in_sysfs else "dumpsys_battery",
+               "system_device", thermal.zones_c.get("battery"))
+        for key, value in (("battery_current", battery.current_ma), ("battery_voltage", battery.voltage_mv),
+                           ("battery_level", battery.level_percent)):
+            record(key, "battery", "dumpsys_battery", "system_device", value)
+
         return MetricsSnapshot(
             device=self.device,
             package=self.package,
@@ -2475,4 +2598,5 @@ class StreamingCaptureSession:
             thermal=thermal,
             battery=battery,
             raw=raw,
+            metric_status=metric_status,
         )

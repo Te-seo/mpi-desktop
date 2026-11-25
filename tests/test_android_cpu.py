@@ -204,4 +204,5 @@ def test_positional_sysfs_reader_has_one_missing_value_sentinel_path():
 
     assert command.startswith("for f in /sys/a /sys/b /sys/c; do v=;")
     assert "__MPI_MISSING__" in command
-    assert 'read -r v < "$f"' in command
+    assert 'read -r v 2>/dev/null < "$f"' in command
+    assert "printf" not in command  # external executable on stock Android

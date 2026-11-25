@@ -71,8 +71,12 @@ def test_pause_freezes_clock_and_auto_stop_extends_exactly_once(monkeypatch):
 def test_collector_emits_sticky_pause_evidence_on_samples_and_end(monkeypatch, pauses):
     entered, release = Queue(), Queue()
     events = []
+    resets = []
 
     class Session:
+        def reset_observation_window(self):
+            resets.append(threading.current_thread())
+
         def sample(self, duration):
             entered.put(True)
             release.get(timeout=3)
@@ -96,6 +100,7 @@ def test_collector_emits_sticky_pause_evidence_on_samples_and_end(monkeypatch, p
         release.put(True)
         entered.get(timeout=3)
         samples = [e["data"] for e in events if e["event"] == "snapshot"]
+        assert resets == [thread] * pauses
         assert samples[0].pause_used is False
         assert samples[-1].pause_used is bool(pauses)
         if pauses:

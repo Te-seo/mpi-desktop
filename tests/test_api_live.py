@@ -343,6 +343,7 @@ def test_capture_error_retries_on_next_sample_interval(monkeypatch, captured_emi
     api._capture_pump("test-retry", FailingSession(), stop, 0.5)
     assert waits == [backoff]
     assert [event["event"] for event in captured_emits] == ["capture_error", "capture_ended"]
+    assert captured_emits[0]["recoverable"] is True
 
 
 def test_start_capture_validates_inputs(fake_backend):

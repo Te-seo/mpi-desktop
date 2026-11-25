@@ -2103,8 +2103,8 @@ def _handle_start_capture(payload: Dict[str, Any]) -> Dict[str, Any]:
             _active_captures[capture_id] = ctx
             _reserved_serials.discard(device_key)
         # After registration (the pump epilogue owns teardown from here on) and
-        # before the pump runs. Only use a bridge warmed by install/connect:
-        # `am start` here would foreground the companion over the measured app.
+        # before the pump runs. An explicitly enabled HUD may bootstrap the
+        # service here while the device reservation still excludes other captures.
         #
         # Under overlay_lock because the capture id is already public: a
         # set_capture_overlay arriving in this window would otherwise open a
@@ -2116,6 +2116,7 @@ def _handle_start_capture(payload: Dict[str, Any]) -> Dict[str, Any]:
                 serial,
                 str(bundle_id),
                 overlay_config,
+                allow_cold_start=bool(overlay_config and overlay_config["enabled"]),
                 session_id=ctx.mobile_session_id,
                 label=getattr(getattr(session, "package", None), "label", None),
             )
@@ -3046,6 +3047,16 @@ def _handle_create_temperature_guard(payload: Dict[str, Any]) -> Dict[str, Any]:
                 _reserved_serials.add(resolved_key)
                 device_key = resolved_key
 
+        # Prepare before the guard launches its target. Promotion and subsequent
+        # toggles must never launch a Companion activity over a running capture.
+        if platform == "android" and overlay_config and overlay_config["enabled"]:
+            from .android import adb, companion
+
+            try:
+                companion.prepare_capture_bridge(serial)
+            except (companion.CompanionError, adb.AdbError, OSError) as exc:
+                logger.info("device overlay preparation unavailable on %s: %s", serial, exc)
+
         config = TemperatureGuardConfig(
             platform=Platform(platform),
             device=device,
@@ -3798,9 +3809,8 @@ def _handle_set_capture_overlay(payload: Dict[str, Any]) -> Dict[str, Any]:
     if overlay is not None and reason is None:
         effective = bool(getattr(overlay, "hud_enabled", False))
         if enabled and not effective:
-            # The companion accepted the request but cannot draw: the user
-            # revoked "Display over other apps" after we granted the appop.
-            reason = "overlay_permission_denied"
+            reason = ("companion_sign_in_required" if getattr(overlay, "login_pending", False)
+                      else "overlay_permission_denied")
     return {
         "capture_id": capture_id,
         "enabled": effective,

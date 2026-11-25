@@ -997,7 +997,7 @@ def test_android_capture_streams_mobile_dashboard_regardless_of_hud(
             closed.set()
 
     def fake_open(serial, **kwargs):
-        assert kwargs["allow_cold_start"] is False
+        assert kwargs["allow_cold_start"] is bool(overlay_config and overlay_config["enabled"])
         opened.append(kwargs)
         return MobileSession()
 

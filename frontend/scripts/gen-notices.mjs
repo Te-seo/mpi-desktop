@@ -34,7 +34,7 @@ const outPath = windowsNoApk ? resolve(process.argv[4]) : process.env.MPI_NOTICE
 const nodeModules = resolve(frontendRoot, 'node_modules')
 
 const REPO_URL = 'https://github.com/Te-seo/mpi-desktop'
-const CORRESPONDING_RELEASE_URL = 'https://dl.mpinspect.com/mpi-source-2026.11.24-1-core-1e3f384204efb519fac800d1629f27efdf07c33af357098b69c3b731484d4de4.zip'
+const CORRESPONDING_RELEASE_URL = 'https://dl.mpinspect.com/mpi-source-2026.11.25-2-68dd6f1.zip'
 const RULE = '='.repeat(78)
 const SUBRULE = '-'.repeat(78)
 
@@ -376,7 +376,7 @@ function build() {
     `WRITTEN OFFER / CORRESPONDING SOURCE (GPL-3.0 §3, §6):\n` +
     `  The complete corresponding source code for this application is publicly\n` +
     `  available at:\n\n      ${REPO_URL}\n\n` +
-    `  Exact corresponding source for the previous Windows release 2026.11.24-1:\n\n      ${CORRESPONDING_RELEASE_URL}\n\n` +
+    `  Exact corresponding source for Windows release 2026.11.25-2:\n\n      ${CORRESPONDING_RELEASE_URL}\n\n` +
     `  Use the source link for your exact installer version. If you\n` +
     `  cannot obtain the source there, the copyright holder will provide it on\n` +
     `  request via the project repository's issue tracker.\n\n` +

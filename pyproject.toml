@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mpi"
-version = "2026.11.24-1"
+version = "2026.11.25-2"
 description = "Unified Android/iOS package performance inspector (live capture)"
 # Core engine is GPL-3.0 (see repo-root LICENSE). Declared here so the package
 # metadata matches the license file.

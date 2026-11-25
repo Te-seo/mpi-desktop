@@ -1,92 +1,120 @@
-# Python
+# Python and Node caches / generated outputs
 __pycache__/
 *.py[cod]
 *.egg-info/
 *.egg
 .eggs/
-build/
-dist/
 .pytest_cache/
 .pytest-tmp*/
 .mypy_cache/
 .ruff_cache/
-
-# Virtualenvs
+.coverage
+.coverage.*
+coverage/
+htmlcov/
 .venv/
 venv/
 env/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-
-# Claude Code local session state
-.claude/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Local output
-.qa/
-*.json.out
-.wrangler/
-
-# PyInstaller portable build
-dist-portable/
-
-# Live device verification artifacts
-test_report_*.csv
-
-# Node / Electron
 node_modules/
-frontend/dist/
-frontend/dist-electron/
-frontend/build_output/
-frontend/build_output_*/
-frontend/.release-staging/
-release/
-# Generated at desktop build time (frontend prebuild → gen-notices.mjs); bundled
-# into the installer via extraResources, so never committed.
-frontend/THIRD-PARTY-NOTICES.txt
-
-# Bundled artifacts
-*.exe
-*.zip
-*.asar
-*.pptx
-# Code-signing private keys — NEVER commit (the public .cer is fine to keep)
-*.pfx
+*.tsbuildinfo
+build/
+dist/
+dist-portable/
 dist-python/
 dist-release-*/
 build-release-*/
+/frontend/dist-electron/
+/frontend/build_output/
+/frontend/build_output_*/
+/frontend/.release-staging/
+/frontend/THIRD-PARTY-NOTICES.txt
+/release/
+out/
+output/
+.artifacts/
+artifacts/
 
-# Large fixtures (do NOT commit) — private device captures, demo inputs
-samples/
-*.perfetto-trace
-
-# Capture files dropped at repo root
-mpi_*.csv
-# Legacy capture filenames may still exist locally during the one-time session
-# migration; keep them out of source control.
-perfinspect_*.csv
-
-# Excel lock files left behind while a saved report is open
-~$*.xlsx
-
-# Local task scratch files
-.tmp/
-
-# Independent source-only repository: local credentials and market artifacts
+# Local settings, environment values and signing / access credentials
 .env
 .env.*
-*.pem
-*.key
-*.jks
-*.keystore
-*.p12
-*.pfx
-*.aab
-*.apk
+*.env
+.envrc
+.dev.vars
+.dev.vars.*
+.npmrc
+.pypirc
+.netrc
+.git-credentials
+credentials.json
+credentials-*.json
+*-credentials.json
+service-account*.json
+client-secret*.json
+client_secret*.json
+secrets.json
+secrets.local.*
+secrets/
 certs/
+id_rsa
+id_ed25519
+*.[pP][eE][mM]
+*.[kK][eE][yY]
+*.[pP][fF][xX]
+*.[pP]12
+*.[jJ][kK][sS]
+*.[kK][eE][yY][sS][tT][oO][rR][eE]
+
+# Release installers/packages: keep the source and packaging scripts, not binaries
+*.[eE][xX][eE]
+*.[dD][lL][lL]
+*.[mM][sS][iI]
+*.[mM][sS][iI][xX]
+*.[aA][pP][pP][xX]
+*.[aA][pP][kK]
+*.[aA][aA][bB]
+*.[zZ][iI][pP]
+*.7z
+*.tar.gz
+*.tgz
+*.asar
+*.dmp
+*.map
+
+# Measurements, reports and local logs may contain account or device identifiers
+captures/
+sessions/
+samples/
+sample_data/
+/reports/
+report-output/
+screenshots/
+recordings/
+*.perfetto-trace
+*.trace
+*.etl
+*.har
+*.[cC][sS][vV]
+*.[tT][sS][vV]
+*.[xX][lL][sS]*
+*.pptx
+*.jsonl
+*.ndjson
+*.sqlite
+*.sqlite3
+*.db
+*.json.out
+*.log
+logs/
+
+# Editor, workspace and temporary files
+.idea/
+.vscode/
+.claude/
+.codex/
+.qa/
+.tmp/
+.wrangler/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -14,3 +14,16 @@ seeded from its verified 283 files and includes documentation and
 standalone build support changes. A new repository commit is not the
 original seller build provenance. The source does not redistribute the
 Android Play app, SDK binaries, installer, or local credentials.
+# Public source exclusions
+
+Only Desktop source, build instructions, and required license notices belong in
+this public repository. Environment files, private keys, installers, captures,
+reports, and generated files should stay local. Store release binaries outside
+the Git source history.
+
+Run `python scripts/check-public-files.py` to detect excluded files already in the
+Git index. Enable the local staged-file guard on each clone with
+`git config --local core.hooksPath .githooks`; if the clone already uses a custom
+hooks path, integrate the check into the existing hook instead. GitHub Actions
+runs the check on pushes and PRs. Neither this check nor `.gitignore` replaces
+reviewing staged changes for sensitive values in otherwise allowed source files.
